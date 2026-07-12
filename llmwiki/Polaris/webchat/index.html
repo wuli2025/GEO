@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 对话</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root{
+    --bg:#ffffff; --sidebar:#f9f9f9; --border:#e5e5e5;
+    --text:#0d0d0d; --muted:#8e8ea0; --user-bg:#f4f4f4;
+    --accent:#10a37f; --accent-h:#0e8f6e; --code-bg:#0d1117;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#212121; --sidebar:#171717; --border:#2f2f2f;
+      --text:#ececec; --muted:#9b9b9b; --user-bg:#2f2f2f;
+      --accent:#10a37f; --accent-h:#1ab78f; --code-bg:#0d1117;
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    display:flex;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);
+  }
+  /* 侧边栏 */
+  .sidebar{
+    width:260px;background:var(--sidebar);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;padding:12px;flex-shrink:0;
+  }
+  .new-chat{
+    display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);
+    border-radius:10px;cursor:pointer;font-size:14px;font-weight:500;background:transparent;color:var(--text);
+  }
+  .new-chat:hover{background:var(--user-bg);}
+  .history{flex:1;overflow-y:auto;margin-top:14px;}
+  .history-item{
+    padding:9px 12px;border-radius:8px;font-size:14px;cursor:pointer;color:var(--text);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .history-item:hover,.history-item.active{background:var(--user-bg);}
+  .brand{font-size:13px;color:var(--muted);padding:8px 4px;border-top:1px solid var(--border);}
+  /* 主区 */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .messages{flex:1;overflow-y:auto;}
+  .msg-row{width:100%;padding:22px 0;}
+  .msg-row.assistant{background:transparent;}
+  .msg-inner{max-width:760px;margin:0 auto;padding:0 24px;display:flex;gap:16px;}
+  .avatar{
+    width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;
+    justify-content:center;font-size:14px;font-weight:700;color:#fff;
+  }
+  .avatar.user{background:#5436da;}
+  .avatar.assistant{background:var(--accent);}
+  .bubble{flex:1;min-width:0;line-height:1.7;font-size:15px;padding-top:3px;}
+  .bubble p{margin:0 0 12px;} .bubble p:last-child{margin-bottom:0;}
+  .bubble pre{background:var(--code-bg);color:#e6edf3;padding:14px;border-radius:8px;overflow-x:auto;font-size:13px;}
+  .bubble code{font-family:"SFMono-Regular",Consolas,Menlo,monospace;}
+  .bubble :not(pre)>code{background:var(--user-bg);padding:2px 6px;border-radius:4px;font-size:13px;}
+  .bubble ul,.bubble ol{margin:0 0 12px;padding-left:22px;}
+  .bubble table{border-collapse:collapse;margin:0 0 12px;}
+  .bubble th,.bubble td{border:1px solid var(--border);padding:6px 10px;}
+  .cursor{display:inline-block;width:8px;height:16px;background:var(--text);vertical-align:text-bottom;animation:blink 1s steps(2) infinite;}
+  @keyframes blink{0%,50%{opacity:1;}50.01%,100%{opacity:0;}}
+  /* 欢迎页 */
+  .welcome{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--text);}
+  .welcome h1{font-size:30px;margin:0;font-weight:600;}
+  .chips{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;max-width:620px;}
+  .chip{border:1px solid var(--border);border-radius:12px;padding:12px 14px;font-size:13px;cursor:pointer;max-width:280px;}
+  .chip:hover{background:var(--user-bg);}
+  /* 输入区 */
+  .composer{padding:14px 0 22px;}
+  .composer-inner{max-width:760px;margin:0 auto;padding:0 24px;}
+  .input-box{
+    display:flex;align-items:flex-end;gap:8px;border:1px solid var(--border);border-radius:24px;
+    padding:8px 8px 8px 18px;background:var(--bg);box-shadow:0 2px 10px rgba(0,0,0,.05);
+  }
+  textarea{
+    flex:1;border:none;outline:none;resize:none;background:transparent;color:var(--text);
+    font-size:15px;line-height:1.5;max-height:200px;font-family:inherit;padding:7px 0;
+  }
+  .send{
+    width:36px;height:36px;border:none;border-radius:50%;background:var(--accent);color:#fff;
+    cursor:pointer;font-size:18px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  }
+  .send:hover{background:var(--accent-h);}
+  .send:disabled{background:var(--muted);cursor:not-allowed;}
+  .foot{text-align:center;font-size:12px;color:var(--muted);margin-top:10px;}
+  @media (max-width:760px){.sidebar{display:none;}}
+</style>
+</head>
+<body>
+  <aside class="sidebar">
+    <button class="new-chat" onclick="newChat()">＋ 新对话</button>
+    <div class="history" id="history"></div>
+    <div class="brand">由 Kimi API 驱动 · 仿 ChatGPT</div>
+  </aside>
+
+  <main class="main">
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <h1>有什么可以帮你的？</h1>
+        <div class="chips">
+          <div class="chip" onclick="useChip(this)">用 Python 写一个快速排序</div>
+          <div class="chip" onclick="useChip(this)">帮我润色一段产品介绍文案</div>
+          <div class="chip" onclick="useChip(this)">解释一下什么是 RAG</div>
+          <div class="chip" onclick="useChip(this)">给我一份周末两日游计划</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="input-box">
+          <textarea id="input" rows="1" placeholder="给 AI 发送消息…"
+            oninput="autoGrow(this)" onkeydown="onKey(event)"></textarea>
+          <button class="send" id="send" onclick="send()">↑</button>
+        </div>
+        <div class="foot">AI 也可能会出错，请核查重要信息。</div>
+      </div>
+    </div>
+  </main>
+
+<script>
+let messages = [];          // 当前会话 [{role, content}]
+let streaming = false;
+const $msgs = document.getElementById('messages');
+const $input = document.getElementById('input');
+const $send = document.getElementById('send');
+
+marked.setOptions({ breaks:true, gfm:true });
+
+function autoGrow(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,200)+'px'; }
+function onKey(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); } }
+function useChip(el){ $input.value = el.textContent; autoGrow($input); $input.focus(); }
+function newChat(){ messages=[]; $msgs.innerHTML=''; showWelcome(); }
+function showWelcome(){
+  $msgs.innerHTML = `<div class="welcome"><h1>有什么可以帮你的？</h1></div>`;
+}
+function removeWelcome(){ const w=$msgs.querySelector('.welcome'); if(w) w.remove(); }
+
+function addRow(role){
+  removeWelcome();
+  const row = document.createElement('div');
+  row.className = 'msg-row '+role;
+  row.innerHTML = `<div class="msg-inner">
+      <div class="avatar ${role}">${role==='user'?'你':'AI'}</div>
+      <div class="bubble"></div></div>`;
+  $msgs.appendChild(row);
+  $msgs.scrollTop = $msgs.scrollHeight;
+  return row.querySelector('.bubble');
+}
+
+async function send(){
+  if(streaming) return;
+  const text = $input.value.trim();
+  if(!text) return;
+
+  // 用户消息
+  const ub = addRow('user');
+  ub.textContent = text;
+  messages.push({role:'user', content:text});
+  $input.value=''; autoGrow($input);
+
+  // 助手占位
+  const ab = addRow('assistant');
+  ab.innerHTML = '<span class="cursor"></span>';
+  streaming = true; $send.disabled = true;
+
+  let acc = '';
+  try{
+    const resp = await fetch('/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({messages})
+    });
+    if(!resp.ok || !resp.body){ throw new Error('HTTP '+resp.status); }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      acc += dec.decode(value, {stream:true});
+      ab.innerHTML = marked.parse(acc) + '<span class="cursor"></span>';
+      $msgs.scrollTop = $msgs.scrollHeight;
+    }
+    ab.innerHTML = marked.parse(acc);
+    messages.push({role:'assistant', content:acc});
+  }catch(err){
+    ab.innerHTML = '<p style="color:#e5484d">⚠️ 请求失败：'+err.message+'</p>';
+  }finally{
+    streaming = false; $send.disabled = false;
+    $input.focus();
+  }
+}
+</script>
+</body>
+</html>

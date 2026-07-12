@@ -1,0 +1,228 @@
+# ═══════════════════════════════════════════════════════════════
+# Cargo workspace —— 板块化架构 (架构重构 Phase 0)
+# 根包 polaris-app = host (宿主, 仅装配)；各板块为 crates/ 下独立 crate。
+# 跨板块只依赖 polaris-core 契约，可 `cargo test -p <板块>` 独立测试。
+# ═══════════════════════════════════════════════════════════════
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[package]
+name = "polaris-app"
+version = "1.7.2"
+description = "Polaris - 本地优先 AI 工作台 (MVP)"
+authors = ["winner3388"]
+edition = "2021"
+# 有两个 bin(polaris-app 桌面 / polaris-server Docker)，`cargo run`(tauri dev) 默认跑桌面壳
+default-run = "polaris-app"
+
+[lib]
+name = "polaris_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+# ── 桌面外壳依赖：全部 optional，仅在 `desktop` feature 下编译 ──
+# Docker(server) 构建用 `--no-default-features --features server`，不拉 tauri，
+# 因此无需 Linux 上的 webkit2gtk-dev/libsoup 等系统库即可编译同一份源码。
+tauri = { version = "2.1", features = [], optional = true }
+tauri-plugin-dialog = { version = "2.0", optional = true }
+tauri-plugin-fs = { version = "2.0", optional = true }
+tauri-plugin-shell = { version = "2.0", optional = true }
+# 自动更新（GitHub Releases 托管）+ 重启（更新后自重启生效）
+tauri-plugin-updater = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+# ── Docker(server) 外壳依赖：仅在 `server` feature 下编译 ──
+axum = { version = "0.7", features = ["ws", "multipart"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"], optional = true }
+futures-util = { version = "0.3", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# 自动更新「防卡死」用：停滞看门狗(time::sleep) + 与下载 future 竞速(select!)。
+# tokio 本就随 tauri 编进来了，这里只是显式开 time/macros 两个 feature；与 Codex 那条
+# 「无 tokio 的 ureq 同步流」互不影响。
+tokio = { version = "1", features = ["time", "macros", "rt-multi-thread", "sync", "net", "io-util", "signal"] }
+walkdir = "2"
+once_cell = "1"
+# 把 src/templates/experts/ 整目录编进二进制：每个专家一份可编辑 .md 提示词，
+# 改完重编即生效(放仓库源码、随版本走)。见 expert/expert_docs.rs。
+include_dir = "0.7"
+directories = "5"
+parking_lot = "0.12"
+regex = "1"
+# libc 给 Unix 平台 forge_capture::kill_tree 用;Windows 编译期不进 cfg(unix) 路径
+# 不放 [target.cfg(unix)] 段避免与 chromiumoxide 同段冲突,加 cfg_attr 让 windows 编译期归零
+libc = { version = "0.2", features = [] }
+
+# 板块 crate (架构重构 Phase 0–1)
+polaris-core = { path = "crates/polaris-core" }
+# 命令契约层(分仓规划 v2 第 1 仓种子):invoke 信封 + 参数访问记账(未知参数曝光/严格模式)。
+polaris-protocol = { path = "crates/polaris-protocol" }
+# Forge 渲染引擎(分仓规划 v2 Phase 1):PPT/截图/视频/TTS/Figma 桥。
+# desktop 特性经下方 [features] 转发;server/CLI 形态用默认(无 tauri)。
+polaris-forge = { path = "crates/polaris-forge" }
+# 核心内核(分仓规划 v2 Phase 1):chat/provider/doctor/skills/integrations/conv/claude_md。
+polaris-kernel = { path = "crates/polaris-kernel" }
+# 检索/KB 引擎(分仓规划 v2 Phase 1):fable 盘点/索引/混检/文件中心 + kb 妈妈库。
+polaris-fable = { path = "crates/polaris-fable" }
+# llmwiki 知识网构建(分仓规划 v2 第 6 仓):唯一获批的 3→2 依赖(骑在 fable 之上)。
+polaris-wiki = { path = "crates/polaris-wiki" }
+# 多人协作引擎(分仓规划 v2 第 5 仓):壳件 apihub/hosting 留本仓 src/。
+polaris-collab = { path = "crates/polaris-collab" }
+# 横切基建(路径/子进程池/超时看门/HTTP):最底层 crate,不依赖 tauri 与任何业务板块。
+# 主 crate 经 `pub use polaris_runtime as runtime;` 别名,业务代码仍写 crate::runtime::…
+polaris-runtime = { path = "crates/polaris-runtime" }
+# sandbox 含 #[tauri::command]，依赖 tauri → 仅桌面构建编译；
+# Docker 内「Docker-in-Docker」沙箱本期降级（dispatch 层给 stub）。
+polaris-sandbox = { path = "crates/polaris-sandbox", optional = true }
+# Forge codec 板块:openh264-rs + 自写 BMFF muxer + ebur128 + cosmic-text + symphonia + audiopus
+# 替 ffmpeg CLI;二进制增量 3.3-5MB;详 workspace/research-notes/task-b.md
+polaris-forge-codec = { path = "crates/forge-codec" }
+# 文件转换 convert.rs(zip/calamine/pdf-extract)已随内核迁入 crates/polaris-kernel。
+# Codex(ChatGPT) OAuth Device Code 流程 —— 同步阻塞 HTTP 客户端 (rustls, 无 tokio)。
+# 只用于授权三步: 取设备码 / 轮询 / code 换 token。比 cc-switch 的 reqwest+tokio 轻得多。
+ureq = { version = "2", features = ["json"] }
+# Claude 官方订阅 OAuth(PKCE):code_challenge = base64url(sha256(verifier))。
+# sha2 纯 Rust 哈希、getrandom 取 OS 加密安全随机(verifier/state),两者均无系统依赖、
+# 三平台(Win/mac/Linux musl+gnu)同构编译;桌面与 server feature 都要,故无条件依赖。
+sha2 = "0.10"
+getrandom = "0.2"
+# 专家头像:base64 编码 PNG → data URL，供前端 <img src=""> 直接使用。
+# 纯 Rust 实现，三平台同构，无系统依赖。
+base64 = "0.22"
+# 多人协作(collab):账号密码哈希。argon2id PHC 串,纯 Rust,三平台同构。
+argon2 = "0.5"
+# 多人协作:账号镜像加密(云端双存,零知识——云端只见密文,解密钥=host.key 派生,永不出主机)。
+chacha20poly1305 = "0.10"
+# iroh / tokio-tungstenite 已随 collab 板块迁入 crates/polaris-collab(collab-net 特性)。
+# qrcode 已随 integrations 板块迁入 crates/polaris-kernel。
+# 回声层「每日做梦」调度需要本地时区的钟点(std 拿不到 local hour)。
+# clock-only:不拉 wasm/serde 等默认特性,增量极小。
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# 语音输入 · 防污染秒达档(voice.rs §7):个人词表拼音对齐纠同音错。
+# 纯 Rust 内嵌音节表,零系统依赖;只用 ToPinyin 取无调音节做编辑距离匹配。
+pinyin = "0.10"
+# encoding_rs 已随 fable(inventory)与 integrations(nas)迁入各自 crate。
+# 语音识别核(voice-asr feature):sherpa-onnx 的 Rust 绑定,本地跑 SenseVoice。
+# download-binaries = 构建时下载预编译 sherpa-onnx 库(免 cmake 从源码编译,本机最稳)。
+# optional + 专属 feature → 默认 build 不拉它,保护现有绿色编译;桌面/Docker 发版显式开。
+# 运行时需把 sherpa-onnx 动态库放进库搜索路径(BUILDING.md)。**桌面与 Docker server 皆可开**。
+sherpa-rs = { version = "0.6", optional = true, features = ["download-binaries"] }
+# 语音输入实时链路(voice-live feature,非 voice-asr):麦克风采集 / 全局热键 / 文本注入。
+# 桌面专属(无头容器里 cpal/rdev/enigo 无意义),故与识别核分开;默认 build 不拉。
+cpal = { version = "0.15", optional = true }   # 跨平台音频采集(按住录音)
+rdev = { version = "0.5", optional = true }    # 全局热键(右 Alt 按住/松手边沿)
+enigo = { version = "0.3", optional = true }   # 把终稿「敲」进当前焦点应用
+# 本地开源嵌入/重排(local-embed feature):fastembed-rs(ONNX)本地跑 BAAI/bge-m3 + bge-reranker-v2-m3,
+# 与硅基流动**同源** → 向量同空间、兼容既有索引,无需重嵌全库;绕开 API 限速与网络延迟(治覆盖率+查询延迟)。
+# optional + 专属 feature → 默认 build 不拉(保护编译+体积);Docker 发版显式开 `--features local-embed`。
+# 经 ort 拉 onnxruntime,**勿与 voice-asr(sherpa 自带 onnxruntime)同时开**,避免两份运行时冲突。
+# **ort-download-binaries**(非 load-dynamic):构建期由 ort 拉「与 ort-sys 2.0.0-rc.12 严格匹配的
+# onnxruntime 1.24.2」并链接进二进制 —— 自包含、版本必对。改用它的根因(2026-06-26 实测):
+# load-dynamic 会在运行时 dlopen 系统里**任意**一个 onnxruntime.dll(本机 C:\WINDOWS\system32 就有
+# 一个旧版),ABI 不匹配 → 推理首次前向 0-CPU 卡死。download-binaries 一劳永逸消掉这类「抓错 DLL」。
+# rustls 变体避免 Docker 拉 openssl;hf-hub-rustls-tls 同理。
+# (fastembed 已随 fable 板块迁入 crates/polaris-fable, 特性经上方 local-embed 转发)
+# 寓言计划 · 检索枢纽(fable/):盘点/chunk/向量统一落 SQLite(PRD v5 P0「SQLite 落盘」)。
+# bundled = 静态编译 sqlite3,三平台(Win/mac/Docker musl 之外的 gnu)零系统依赖。
+rusqlite = { version = "0.32", features = ["bundled"] }
+# image(缩略图/首帧解码)已随 fable 板块迁入 crates/polaris-fable(forge 各自带)。
+# chromiumoxide / headless_chrome 已随 forge 板块迁入 crates/polaris-forge(仅它在用)。
+# 图像字节级处理(forge_pptx 流式写无需 image crate,本条仅 codec 板块用,留 polaris-forge-codec)
+# image = { version = "0.25", default-features = false, optional = true }
+# audio 解码(symphonia) + 编码(audiopus)+ 响度(ebur128)+ 字幕(cosmic-text)
+# 全在 polaris-forge-codec crate 内部依赖,主 crate 不直接拉,避免 binary 膨胀
+
+# 原生标题栏染色（titlebar.rs）：Win11 DwmSetWindowAttribute 让标题栏随主题与框面同色
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_WindowsProgramming", "Win32_NetworkManagement_WNet", "Win32_System_SystemInformation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
+
+[features]
+default = ["desktop"]
+# 桌面构建：Tauri 外壳 + 各插件 + 沙箱板块 + 自定义协议。
+desktop = [
+    "dep:tauri",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-fs",
+    "dep:tauri-plugin-shell",
+    "dep:tauri-plugin-updater",
+    "dep:tauri-plugin-process",
+    "dep:polaris-sandbox",
+    "polaris-kernel/desktop", # 内核的桌面形态(tauri 事件 + 沙箱档位)
+    "polaris-forge/desktop", # forge 引擎的桌面形态(tauri 事件 + headless_chrome 兜底)
+    "polaris-fable/desktop", # 检索引擎的桌面形态(tauri 事件/async_runtime)
+    "polaris-wiki/desktop",  # llmwiki 构建管线的桌面形态
+    "polaris-collab/desktop", # 协作引擎的桌面命令
+    "custom-protocol",
+    "collab-host",           # 桌面一键当主机:内嵌协作 axum 路由
+]
+custom-protocol = ["tauri?/custom-protocol"]
+# Docker/Web 构建：axum HTTP/WS 外壳，复用全部 Rust 引擎，不含 Tauri。
+# collab-host 提供共用的协作路由(collab/http.rs)与全部 axum 依赖。
+server = ["collab-host", "polaris-fable/server"]
+# 协作路由双壳共用(collab crate 的 http.rs)+ 壳件 apihub/hosting 所需 HTTP 依赖。
+collab-host = ["dep:axum", "dep:tower", "dep:tower-http", "dep:futures-util", "polaris-collab/collab-host"]
+# 语音识别运行时:本地 SenseVoice(sherpa-onnx),**桌面 / Docker server 皆可**。
+# 只拉 sherpa-rs,不含麦克风/热键/注入 → Docker server 可开它跑「浏览器上传音频→服务端识别」。
+# 默认不开(保护 build + 镜像体积),实测/发版显式开 `--features voice-asr`。
+voice-asr = ["dep:sherpa-rs"]
+# 实时语音输入(本机录音 + 全局热键 + 文本注入):桌面专属,依赖 voice-asr。
+# cpal(ALSA)/rdev(X11)/enigo 在无头容器里无意义且难编译,故从 voice-asr 拆出。
+# 桌面发版用 `--features voice-live`(自动带上 voice-asr)。
+voice-live = ["voice-asr", "dep:cpal", "dep:rdev", "dep:enigo"]
+# 本地开源嵌入/重排(fastembed/ONNX):本地 BGE-M3 + bge-reranker-v2-m3,无 API 限速、查询不走网络。
+# 默认不开(保护 build + 镜像体积);Docker 发版显式开 `--features local-embed`。
+# 运行时 POLARIS_LOCAL_EMBED=1 才真正启用本地路径(否则仍走云 API)。勿与 voice-asr 同开(双 onnxruntime)。
+# fastembed 依赖已随 fable 板块迁入 crates/polaris-fable,此处只做特性转发。
+local-embed = ["polaris-fable/local-embed"]
+# 多人协作组网隧道:iroh 打洞直连 + relay 兜底(依赖已随 collab 板块迁入 crate)。
+collab-net = ["polaris-collab/collab-net"]
+
+# server 二进制：浏览器前端 + REST/WS 后端（替代 Tauri 外壳）。
+# 构建：cargo build --release --bin polaris-server --no-default-features --features server
+#
+# v1.0.1 实测:即便去掉 required-features 让 desktop 编出 stub,tauri bundler
+# 仍会按 [[bin]] 列表去 copy 二进制,而 stub 不带 main 链接(bin source 用
+# #[cfg(feature="server")] 门控,desktop 默认特性下 main 函数不存在),会
+# 报 does not exist。把整块 [[bin]] 注释掉 → bundler 完全看不到它,直接
+# 出包。Docker 真服务端等 v1.0.2 走 workspace 拆分再补(本版无 docker 镜像)。
+# 【临时启用·仅本机回归测试用】带 required-features 保护:desktop 默认构建不编它;
+# 发版/打桌面包前必须改回注释,否则 tauri bundler 会按 [[bin]] 列表 copy 它而报错。
+# [[bin]]
+# name = "polaris-server"
+# path = "src/bin/polaris-server.rs"
+# required-features = ["server"]
+
+# 桌面二进制保持默认（main.rs）。
+[[bin]]
+name = "polaris-app"
+path = "src/main.rs"
+
+# ═══════════════════════════════════════════════════════════════
+# Release 体积优化 — 工业级减负配置
+# ═══════════════════════════════════════════════════════════════
+[profile.release]
+opt-level = 3          # 最高优化级别
+lto = true             # 链接时优化，合并所有 crate
+codegen-units = 1      # 单 codegen unit，最大化优化
+# 用 unwind（非 abort）：第三方解析库（pdf-extract/calamine…）遇坏文件可能 panic，
+# convert::guard 用 catch_unwind 在命令边界兜成 Err，避免单个坏文件崩掉整个 app。
+panic = "unwind"
+strip = true           # 自动剥离符号表
+
+# 进一步缩减：移除断言和溢出检查（仅 release）
+[profile.release.package."*"]
+opt-level = 3
+
+# server(Docker) 二进制专用：继承 release 的优化，但关掉 LTO + 放开 codegen-units，
+# 大幅缩短镜像构建时间。server 不是 CPU 密集型（重活在 spawn 的 claude CLI），
+# 关 LTO 对运行性能几乎无影响，却能把 Docker 里的最终链接从数分钟降到数十秒。
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = true
