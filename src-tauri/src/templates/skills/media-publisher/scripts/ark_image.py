@@ -130,7 +130,12 @@ def _minimax_key():
         try:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            items = data.get("providers", data if isinstance(data, list) else [])
+            # providers.json 的真实顶层键是 "items"（见 provider/store.rs 的 Store 结构）；
+            # 兼容 "providers" 与顶层直接是列表两种历史/异常写法。
+            if isinstance(data, list):
+                items = data
+            else:
+                items = data.get("items") or data.get("providers") or []
             for it in items:
                 if isinstance(it, dict) and "minimax" in str(it.get("id", "")).lower():
                     sc = it.get("settings_config") or it.get("settingsConfig") or {}

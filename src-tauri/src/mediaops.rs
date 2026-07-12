@@ -116,9 +116,13 @@ pub struct MetricEvent {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaOpsState {
+    #[serde(default)]
     pub topics: Vec<Topic>,
+    #[serde(default)]
     pub queue: Vec<QueueItem>,
+    #[serde(default)]
     pub settings: Vec<PlatformSettings>,
+    #[serde(default)]
     pub metrics: Vec<MetricEvent>,
 }
 

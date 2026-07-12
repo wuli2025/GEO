@@ -299,12 +299,14 @@ def set_clipboard(text):
         return "pyperclip"
     except Exception:
         pass
+    tmp_name = None
     try:
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
                                           encoding="utf-8-sig")
+        tmp_name = tmp.name
         tmp.write(text)
         tmp.close()
-        cmd = ("Get-Content -Raw -Encoding UTF8 '%s' | Set-Clipboard" % tmp.name.replace("'", "''"))
+        cmd = ("Get-Content -Raw -Encoding UTF8 '%s' | Set-Clipboard" % tmp_name.replace("'", "''"))
         for exe in ("powershell", "pwsh"):
             try:
                 r = subprocess.run([exe, "-NoProfile", "-Command", cmd],
@@ -315,6 +317,13 @@ def set_clipboard(text):
                 continue
     except Exception:
         pass
+    finally:
+        # 临时稿件文件含全文，用完即删，别残留在 temp 目录
+        if tmp_name:
+            try:
+                os.remove(tmp_name)
+            except Exception:
+                pass
     return None
 
 

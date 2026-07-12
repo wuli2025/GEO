@@ -238,9 +238,10 @@ fn ensure_account_window_script() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// 探测可用的 python 可执行文件：先 `python`，回落 Windows 启动器 `py`。
+/// 探测可用的 python 可执行文件：先 `python`，再 `python3`（macOS/Linux 常规入口），
+/// 最后回落 Windows 启动器 `py`。
 fn find_python() -> Option<&'static str> {
-    for exe in ["python", "py"] {
+    for exe in ["python", "python3", "py"] {
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("--version")
             .stdout(std::process::Stdio::null())
