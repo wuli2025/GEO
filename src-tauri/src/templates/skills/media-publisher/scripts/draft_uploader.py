@@ -122,8 +122,11 @@ PLATFORMS = {
         "save_ok_selectors": ["*:has-text('保存成功')", "*:has-text('草稿保存成功')", "*:has-text('已保存')"],
     },
     "bilibili": {
+        # 2026-07 实测：B站专栏正文用非标准编辑器（4 次 DOM 探测均无任何 contenteditable/
+        # textarea/富文本类元素，点击后焦点仍停在 body，疑似 canvas 类自绘），标准选择器
+        # 自动化够不到。故降级 partial：自动填标题（标题 input 可用）+ 正文进剪贴板，人工粘贴。
         "name": "B站专栏",
-        "status": "full",
+        "status": "partial",
         "draft_url": "https://member.bilibili.com/read/editor/#/new",
         "profile": _profile("bilibili"),
         "login_url_patterns": ["passport.bilibili.com/login", "passport.bilibili.com"],
@@ -148,30 +151,38 @@ PLATFORMS = {
         "save_ok_selectors": ["*:has-text('保存成功')", "*:has-text('已保存')", "*:has-text('保存于')"],
     },
     "baijia": {
+        # 2026-07 实测：百家号用百度 UEditor，正文在 about:blank 子 iframe 的 <body contenteditable>
+        # 里，页面有明确「存草稿」按钮 → 可全自动。正文选择器靠 _find_in_frames 进子 iframe 命中 body。
         "name": "百家号",
-        "status": "partial",  # 编辑器在 iframe 且改版频繁：打开编辑页 + 剪贴板辅助
+        "status": "full",
         "draft_url": "https://baijiahao.baidu.com/builder/rc/edit?type=news",
         "profile": _profile("baijia"),
         "login_url_patterns": ["builder/theme/bjh/login", "passport.baidu.com", "/login"],
         "login_selectors": ["#passport-login-pop", ".pass-login-pop", ".tang-pass-qrcode"],
-        "title_selectors": ["textarea[placeholder*='标题']", "input[placeholder*='标题']"],
-        "editor_selectors": ["#ueditor_0", ".edui-editor iframe", "[contenteditable=true]"],
-        "save_selectors": ["*:has-text('存草稿')", "*:has-text('保存草稿')"],
+        "title_selectors": ["textarea[placeholder*='标题']", "input[placeholder*='标题']",
+                            "textarea.article-title", ".title-content textarea", "div[contenteditable=true][data-placeholder*='标题']"],
+        "editor_selectors": ["body.view", "body[contenteditable=true]", "body.edui-body-container",
+                            "#ueditor_0", "[contenteditable=true]"],
+        "save_selectors": ["button:has-text('存草稿')", "*:text-is('存草稿')", "*:has-text('存草稿')", "*:has-text('保存草稿')"],
         "auto_save": False,
-        "save_ok_selectors": ["*:has-text('保存成功')"],
+        "save_ok_selectors": ["*:has-text('已保存')", "*:has-text('保存成功')", "*:has-text('保存于')"],
     },
     "douyin": {
+        # 2026-07 实测：抖音图文标题 input.semi-input[placeholder=添加作品标题]，正文
+        # div.editor-kit-container[contenteditable=true]（placeholder=添加作品描述）→ 可全自动填充。
+        # 但页面没有「存草稿」按钮（只有发布/保存权限），故只填充不保存、更不发布，留人工核对。
         "name": "抖音图文",
-        "status": "partial",  # 打开图文发布页 + 剪贴板辅助
+        "status": "full",
         "draft_url": "https://creator.douyin.com/creator-micro/content/publish-media/text",
         "profile": _profile("douyin"),
         "login_url_patterns": ["creator.douyin.com/login", "/passport/", "sso.douyin.com"],
         "login_selectors": [".login-pannel", "div[class*='qrcode']", "img[src*='qrcode']"],
-        "title_selectors": ["input[placeholder*='标题']", "textarea[placeholder*='标题']"],
-        "editor_selectors": [".ProseMirror[contenteditable=true]", "div[contenteditable=true]"],
-        "save_selectors": ["*:has-text('存草稿')", "*:has-text('保存草稿')"],
+        "title_selectors": ["input[placeholder*='标题']", "input.semi-input", "textarea[placeholder*='标题']"],
+        "editor_selectors": ["div.editor-kit-container[contenteditable=true]",
+                            "div[contenteditable=true][data-placeholder*='描述']", "div[contenteditable=true]"],
+        "save_selectors": [],  # 抖音图文无存草稿按钮：只填充，绝不点发布，留人工核对
         "auto_save": False,
-        "save_ok_selectors": ["*:has-text('保存成功')"],
+        "save_ok_selectors": [],
     },
     # 下面两个平台已有更强的专用链路，不在这里重复实现
     "wechat": {
@@ -583,6 +594,9 @@ def save_draft(page, cfg):
         # 知乎等平台按内容变更自动存草稿——正文刚粘贴入档就是变更，这里只等保存提示出现
         confirmed = _wait_any(page, cfg.get("save_ok_selectors", []), 12)
         return True, confirmed
+    # 本平台无存草稿按钮（如抖音图文）：只填充、不保存、不按 Ctrl+S（避免触发浏览器保存框），留人工
+    if not cfg.get("save_selectors"):
+        return False, False
     clicked = False
     fr, el, sel = _find_in_frames(page, cfg.get("save_selectors", []))
     if el:
@@ -615,8 +629,26 @@ def _wait_any(page, selectors, seconds):
     return False
 
 
+# 批量/AI 模式：--close-after 时存完草稿即关窗退出，便于同一 profile 连续发多篇
+# （默认 True=保持窗口，供人工核对；置 False=自动收尾）
+HOLD_WINDOW = True
+
+
 def hold_window(ctx):
-    """窗口保持到用户自己关（manual / 降级辅助模式的收尾）。"""
+    """窗口保持到用户自己关（manual / 降级辅助模式的收尾）。
+    --close-after 模式下不等待，直接收尾关闭，让批量投递能顺序释放 profile 锁。"""
+    if not HOLD_WINDOW:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        pw = getattr(ctx, "_pw", None)
+        if pw:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+        return
     print("[投递] %s" % MANUAL_HOLD_HINT, flush=True)
     try:
         while True:
@@ -703,9 +735,20 @@ def run(platform, title, content_file, images, manual):
 
         # ── manual 模式 / partial 平台：编辑页已开，剪贴板辅助 ──
         if manual or cfg["status"] == "partial":
-            via = clipboard_assist(title, raw or text)
-            note = ("已打开%s编辑页，标题+正文已进系统剪贴板（%s），"
-                    "光标点进正文框 Ctrl+V 即可。" % (cfg["name"], via or "剪贴板失败，请从稿件文件复制"))
+            # partial 平台若标题选择器可用，先尽力把标题自动填上（如 B站标题 input 可用，
+            # 只有正文编辑器够不到），减少人工步骤——只剩正文一次 Ctrl+V。
+            title_auto = False
+            if cfg.get("title_selectors"):
+                try:
+                    title_auto = fill_title(page, cfg, title)
+                    _log("title_filled", ok=title_auto, title=title)
+                except Exception:
+                    title_auto = False
+            # 标题已自动填入时，剪贴板只放正文，人工一次 Ctrl+V 即可（避免重复贴标题）
+            via = clipboard_assist("" if title_auto else title, raw or text)
+            head = "标题已自动填入，正文" if title_auto else "标题+正文"
+            note = ("已打开%s编辑页，%s已进系统剪贴板（%s），"
+                    "光标点进正文框 Ctrl+V 即可。" % (cfg["name"], head, via or "剪贴板失败，请从稿件文件复制"))
             if images:
                 note += " 配图请手动拖入: %s" % ", ".join(images)
             print("[投递] " + note, flush=True)
@@ -734,15 +777,30 @@ def run(platform, title, content_file, images, manual):
         clicked, confirmed = save_draft(page, cfg)
         _log("draft_saved", ok=clicked, confirmed=confirmed)
 
+        # 标题没自动填上（如百家号 FeEditor 标题框定位不稳）：存完草稿后把标题送剪贴板兜底，
+        # 让它成为剪贴板最后内容（不与正文/贴图的合成粘贴冲突），用户点标题栏一次 Ctrl+V 即可。
+        title_clip = False
+        if not title_ok:
+            title_clip = bool(set_clipboard(title))
+            _log("title_to_clipboard", ok=title_clip)
+
+        no_draft_btn = not cfg.get("save_selectors")
+        if no_draft_btn:
+            save_desc = "本平台无草稿箱，已完成填充，请核对后自行发布"
+            confirm_desc = ""
+        else:
+            save_desc = "已存草稿" if clicked else "没找到存草稿按钮，请在窗口里手动保存"
+            confirm_desc = "（见保存回执）" if confirmed else "（未见明确回执，请在窗口目检）"
         detail = "%s：正文已入编辑器（通道=%s，%d 字），%s%s" % (
-            cfg["name"], method, landed,
-            ("已存草稿" if clicked else "没找到存草稿按钮，请在窗口里手动保存"),
-            ("（见保存回执）" if confirmed else "（未见明确回执，请在窗口目检）"))
+            cfg["name"], method, landed, save_desc, confirm_desc)
+        if not title_ok:
+            detail += "；标题未能自动填入%s，请点标题栏 Ctrl+V" % ("（已复制到剪贴板）" if title_clip else "")
         if img_hints:
             detail += "；" + "；".join(img_hints)
         detail += "。铁律：脚本不点发布，请自行到后台核对后发布。"
         _final("draft_uploaded", detail, platform=platform, method=method,
-               title_filled=title_ok, save_clicked=clicked, save_confirmed=confirmed)
+               title_filled=title_ok, title_clipboard=title_clip,
+               save_clicked=clicked, save_confirmed=confirmed)
         # 结果 JSON 已输出（上游可解析）；窗口保持到用户自己关——草稿已入库，关早关晚都安全
         hold_window(ctx)
         return 0
@@ -776,6 +834,8 @@ def main():
     ap.add_argument("--images", default="", help="配图路径，逗号分隔")
     ap.add_argument("--manual", action="store_true",
                     help="手动辅助模式：只开编辑页+标题正文进剪贴板，不自动填充")
+    ap.add_argument("--close-after", action="store_true",
+                    help="存完草稿即关窗退出（批量/AI 模式，便于同一账号连续发多篇）")
     args = ap.parse_args()
 
     try:
@@ -783,6 +843,10 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+    global HOLD_WINDOW
+    if args.close_after:
+        HOLD_WINDOW = False
 
     images = [p for p in (args.images.split(",") if args.images else []) if p.strip()]
     return run(args.platform.strip().lower(), args.title, args.content_file, images, args.manual)
