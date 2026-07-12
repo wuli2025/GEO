@@ -138,7 +138,10 @@ SELECTORS = {
 }
 
 MP_HOME = "https://mp.weixin.qq.com/"
-SESSION_DIR = os.path.expanduser("~/Polaris/sessions/wechat")
+# 公众号登录态统一用 accounts.rs 定义的规范 profile（~/.polaris-mp-profile，post-to-wechat
+# 扫码也落这里），避免两个投递工具各用一套 profile、要扫两次码。旧值 ~/Polaris/sessions/wechat
+# 还是 GEO fork 前的 ~/Polaris 旧路径，双重不一致，一并修正。
+SESSION_DIR = os.environ.get("POLARIS_MP_PROFILE") or os.path.expanduser("~/.polaris-mp-profile")
 
 
 # ───────────────────────── 壹伴样式引擎（浏览器内执行；预览 / 直传 / 换肤共用同一份）─────────────────────────
