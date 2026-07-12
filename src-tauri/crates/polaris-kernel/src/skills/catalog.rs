@@ -76,6 +76,15 @@ pub(crate) fn catalog() -> Vec<CatalogSkill> {
             preinstalled: true,
             system_prompt: WECHAT_TS_SKILL_MD,
         },
+        // ── 多平台草稿投递官（7 平台草稿直送 + Seedream 配图，随包脚本启动落盘） ──
+        CatalogSkill {
+            id: "media-publisher",
+            name: "多平台草稿投递官",
+            description: "把写好的稿件自动送进知乎/头条/B站创作者后台并存草稿（粘贴通道直传），百家号/抖音开编辑页+剪贴板辅助，公众号/小红书转交专用链路；AI直传与手动辅助双模式，登录态持久化；附火山方舟 Seedream 生图配图。铁律只存草稿绝不发布",
+            source: "third-party",
+            preinstalled: true,
+            system_prompt: MEDIA_PUB_SKILL_MD,
+        },
         // ── 源自 ClaudeSkills 合集的两个内容创作技能（全链路成稿/出图时调用） ──
         CatalogSkill {
             id: "gz-wechat-article-writer",
@@ -133,6 +142,7 @@ pub(crate) fn skill_category(id: &str) -> &'static str {
         | "community-engagement"
         | "xhs-mao-pipeline"
         | "wechat-md-typesetter"
+        | "media-publisher"
         | "gz-wechat-article-writer"
         | "gz-notion-infographic" => "自媒体运营",
         // 音视频

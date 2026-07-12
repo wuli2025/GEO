@@ -14,14 +14,10 @@ pub(crate) struct KbPackDef {
     skill_id: &'static str,
 }
 
+/// 当前无内置资料包：`resources/seed-kb/` 已清空(知识库从空库起步,用户自行 ingest)。
+/// 未来要再发名人资料包时，把 payload 放回 `resources/seed-kb/<dir>/` 并在此登记即可。
 pub(crate) fn pack_catalog() -> Vec<KbPackDef> {
-    vec![KbPackDef {
-        id: "mao",
-        name: "毛主席",
-        description: "《毛泽东选集》等著作的结构化资料库。装入后消息里写「请教毛主席」即可让他用毛选式大白话 + 矛盾分析法客观分析问题、生成标注来源的 HTML；同时自动创建「毛主席」人格项目。",
-        dir: "毛主席",
-        skill_id: "consult-mao",
-    }]
+    vec![]
 }
 
 #[derive(Serialize)]

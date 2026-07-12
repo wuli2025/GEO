@@ -760,14 +760,9 @@ onMounted(() => {
     void (async () => {
       await loadBriefings();
       if (disposed) return; // await 期间可能已卸载
-      // 每次打开软件:只要有今日建议,就在屏幕正中自动弹出一次(本次启动仅弹一次,
-      // 关掉后不再骚扰;底部胶囊随时可手动重开)。sessionStorage 随进程重启而清空,
-      // 所以「下次打开软件」会再弹。
-      if (briefings.value.length && !sessionStorage.getItem("polaris.brief.shown")) {
-        briefOpen.value = true;
-        sessionStorage.setItem("polaris.brief.shown", "1");
-      }
-      // 做梦/晨报生成完 → 刷新建议,并主动弹出让用户第一时间看到新内容。
+      // 「今日建议」不再自动弹窗(开软件时、做梦生成完都不弹) —— 只在底部留胶囊,
+      // 用户想看时自己点开。
+      // 做梦/晨报生成完 → 静默刷新建议内容(胶囊里下次打开即是新的)。
       // 桌面走 Tauri 事件、Docker/Web 走 WS,两条路径的 listen 包装都直接回传 payload 本体
       // (见 tauri.ts),所以读 p.kind;旧代码读 p.payload.kind 多包一层、永远取不到。
       // 捕获 unlisten 并纳入 voiceUnlisteners(onBeforeUnmount 统一回收):此前未解绑,
@@ -775,7 +770,6 @@ onMounted(() => {
       const un = await listen("echo:dream", async (p: any) => {
         if ((p?.kind ?? p?.payload?.kind) === "done") {
           await loadBriefings();
-          if (briefings.value.length) briefOpen.value = true;
         }
       });
       if (disposed) un(); // 卸载后才注册完成:立刻解绑,别泄漏

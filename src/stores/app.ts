@@ -22,7 +22,6 @@ export type ViewKey =
   | "claude_md"
   | "skill_center"
   | "env_doctor"
-  | "mcp"
   | "update"
   | "feishu"
   | "settings"
@@ -30,10 +29,9 @@ export type ViewKey =
   | "voice_input"
   | "video_course"
   | "media_ops"
+  | "media_dashboard"
   | "deck"
-  | "web_studio"
-  | "collab"
-  | "collab_project";
+  | "web_studio";
 
 export const useAppStore = defineStore("app", () => {
   const view = ref<ViewKey>("chat");
@@ -240,9 +238,6 @@ export const useAppStore = defineStore("app", () => {
   const drawerWidth = computed(() =>
     drawerCollapsed.value ? 0 : drawerWidths.value.default ?? 300
   );
-
-  // MCP 配置弹窗（全局状态，Sidebar 与 App 共用）
-  const showMcpModal = ref(false);
 
   async function refreshProjects() {
     try {
@@ -462,7 +457,6 @@ export const useAppStore = defineStore("app", () => {
     drawerResizing,
     setDrawerWidth,
     resetDrawerWidth,
-    showMcpModal,
     theme,
     setTheme,
     setView,

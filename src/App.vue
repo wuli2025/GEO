@@ -46,17 +46,15 @@ const SenseApi = defineAsyncComponent(() => import("./components/SenseApi.vue"))
 const VoiceSettings = defineAsyncComponent(() => import("./components/VoiceSettings.vue"));
 const SkillCenter = defineAsyncComponent(() => import("./components/SkillCenter.vue"));
 const AddProviderModal = defineAsyncComponent(() => import("./components/AddProviderModal.vue"));
-const McpConfigModal = defineAsyncComponent(() => import("./components/McpConfigModal.vue"));
 const WorkflowPackModal = defineAsyncComponent(() => import("./components/WorkflowPackModal.vue"));
 const UsageBoard = defineAsyncComponent(() => import("./components/UsageBoard.vue"));
 const UpdatePanel = defineAsyncComponent(() => import("./components/UpdatePanel.vue"));
 const FeishuSettings = defineAsyncComponent(() => import("./components/FeishuSettings.vue"));
 const VideoCourseStudio = defineAsyncComponent(() => import("./components/VideoCourseStudio.vue"));
-const MediaOps = defineAsyncComponent(() => import("./components/MediaOps.vue"));
+const MediaOps = defineAsyncComponent(() => import("./components/MediaOpsCenter.vue"));
+const MediaDashboard = defineAsyncComponent(() => import("./components/MediaDashboard.vue"));
 const DeckStudio = defineAsyncComponent(() => import("./components/DeckStudio.vue"));
 const WebStudio = defineAsyncComponent(() => import("./components/WebStudio.vue"));
-const CollabView = defineAsyncComponent(() => import("./features/collab/CollabView.vue"));
-const ProjectHome = defineAsyncComponent(() => import("./features/collab/ProjectHome.vue"));
 // 「让 AI 更懂你」向导常驻 App 级:首次打开才拉 chunk,之后保持挂载 → 扫描/归类跑着时
 // 用户可转后台、切视图、最小化窗口都不丢进度(组件不卸载,事件监听与状态都还在)。
 const OnboardingWizard = defineAsyncComponent(() => import("./components/OnboardingWizard.vue"));
@@ -386,16 +384,14 @@ function startSbDrag(e: MouseEvent) {
         <EnvDoctor v-else-if="mountedView === 'env_doctor'" />
         <UpdatePanel v-else-if="mountedView === 'update'" />
         <FeishuSettings v-else-if="mountedView === 'feishu'" />
-        <McpConfigModal v-else-if="mountedView === 'mcp'" inline @close="app.setView('chat')" />
         <Settings v-else-if="mountedView === 'settings'" />
         <SenseApi v-else-if="mountedView === 'sense_api'" />
         <VoiceSettings v-else-if="mountedView === 'voice_input'" />
         <VideoCourseStudio v-else-if="mountedView === 'video_course'" />
         <MediaOps v-else-if="mountedView === 'media_ops'" />
+        <MediaDashboard v-else-if="mountedView === 'media_dashboard'" />
         <DeckStudio v-else-if="mountedView === 'deck'" />
         <WebStudio v-else-if="mountedView === 'web_studio'" />
-        <CollabView v-else-if="mountedView === 'collab'" />
-        <ProjectHome v-else-if="mountedView === 'collab_project'" />
       </KeepAlive>
       </FaultBoundary>
 
@@ -436,8 +432,6 @@ function startSbDrag(e: MouseEvent) {
     <AutomationModal v-if="automation.editorOpen" />
     <UsageBoard v-if="providers.showUsageBoard" />
 
-    <!-- MCP 配置对话框（触发器已移到 Sidebar 导航栏下方） -->
-    <McpConfigModal v-if="app.showMcpModal" @close="app.showMcpModal = false" />
 
     <!-- 启动流程覆盖层：splash → onboarding -->
     <Transition name="splash-fade">

@@ -667,7 +667,7 @@ function fmtLastActive(secs: number | null): string {
 }
 
 // 扫码绑定 / 检测登录态：拉起对话让 claude 跑对应技能（登录态由技能持久化到固定 profile）
-async function runAccountTask(platform: "wechat" | "xhs", mode: "login" | "check") {
+async function runAccountTask(platform: string, mode: "login" | "check") {
   if (accBusy.value) return;
   accBusy.value = platform;
   accMsg.value = null;
@@ -723,13 +723,13 @@ async function openYibanPanel() {
   }
 }
 
-async function forgetAccount(platform: "wechat" | "xhs") {
+async function forgetAccount(platform: string) {
   if (accBusy.value) return;
   accBusy.value = platform;
   accMsg.value = null;
   error.value = null;
   try {
-    accMsg.value = await mediaAccounts.forget(platform);
+    accMsg.value = await mediaAccounts.forget(platform as import("../tauri").MediaPlatform);
     await loadAccounts();
   } catch (e: any) {
     error.value = e?.message ?? String(e);

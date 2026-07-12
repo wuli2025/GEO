@@ -1,10 +1,12 @@
 // ── 引擎模块（桌面 + Docker 两种外壳共用同一份源码）──
 pub mod accounts;
+pub mod mediaops;
 // 多人协作已抽为独立 crate(polaris-collab);壳件留本仓:
 // apihub=应用数据面分发(认识全部引擎), hosting=桌面一键当主机拼装。
 pub use polaris_collab::collab;
 #[cfg(feature = "collab-host")]
 pub mod apihub;
+pub mod ark;
 #[cfg(feature = "desktop")]
 pub mod hosting;
 pub mod expert;
@@ -134,6 +136,7 @@ pub fn run() {
             std::thread::spawn(|| {
                 skills::seed_web_studio_skill();
                 skills::seed_wechat_typesetter_skill();
+                skills::seed_media_publisher_skill();
             });
             // 注：此前这里会为「早期播种过毛主席资料库」的老用户补装 consult-mao 技能。
             // 现「请教毛主席」默认隐藏 —— 只在用户主动安装「毛主席」名人资料包时才装该技能，
@@ -217,6 +220,17 @@ pub fn run() {
             // 全盘资源归集（扫描 C/D 盘 → 多维表格 → 归档资源库 / 摄入核心层）
             scan::scan_roots,
             scan::scan_resources,
+            // 自媒体运营中心：题库/队列/平台设置/度量
+            mediaops::mediaops_state,
+            mediaops::mediaops_topic_add,
+            mediaops::mediaops_topic_update,
+            mediaops::mediaops_topic_delete,
+            mediaops::mediaops_queue_add,
+            mediaops::mediaops_queue_update,
+            mediaops::mediaops_queue_delete,
+            mediaops::mediaops_settings_set,
+            mediaops::mediaops_metric_add,
+            mediaops::mediaops_metrics_summary,
             // Sandbox (板块⑤ 已抽离为 polaris-sandbox crate, 命令名不变)
             polaris_sandbox::commands::sandbox_status,
             polaris_sandbox::commands::sandbox_build_image,
@@ -227,6 +241,13 @@ pub fn run() {
             polaris_sandbox::e2b::cube_config_get,
             polaris_sandbox::e2b::cube_config_set,
             polaris_sandbox::e2b::cube_status,
+            // 火山方舟 API 中心：生图/连通测试/模型列表
+            ark::ark_config_get,
+            ark::ark_config_set,
+            ark::ark_test,
+            ark::ark_models,
+            ark::ark_image_generate,
+            ark::ark_chat_test,
             // Conv (项目 + 对话历史)
             conv::conv_list_projects,
             conv::conv_create_project,
@@ -261,6 +282,11 @@ pub fn run() {
             expert::team_export,
             expert::expert_route_debug,
             expert::expert_recommend_from_kb,
+            // 自媒体统一专家团：平台提示词补丁
+            expert::expert_media_doc,
+            expert::expert_media_overlay_get,
+            expert::expert_media_overlay_set,
+            expert::expert_media_list,
             // 色彩调配引擎 (全 app 配色唯一真源)
             palette::palette_generate,
             // 飞书网关 (板块⑭ 阶段 A)
@@ -278,6 +304,7 @@ pub fn run() {
             // 自媒体「账号管理」: 探测平台登录态 + 解绑（删 profile）
             accounts::media_accounts_status,
             accounts::media_account_forget,
+            accounts::media_account_open,
             // 「盘管理」: 记住登陆过的 NAS(SMB) + 一键映射/断开网络盘
             integrations::nas::nas_list,
             integrations::nas::nas_save,

@@ -120,45 +120,128 @@ pub struct RouteRequest {
 /// （AutoMatch 是默认模式），旧实现等于每条消息重建整份花名册 → 明显卡顿。
 /// 改为 Lazy 静态：只读热路径走 `all_experts_ref()` 零分配，
 /// 仅需 owned 列表的命令（发给前端）才 `clone()`。
-/// 已裁撤专家（2026-06-16 提示词组合审计后下线：跨组重复 / 高度冗余 / 场景太冷门 / 团队仪式岗）。
-/// 用户明确保留 game-developer、embedded-systems，故不在此列。从花名册过滤掉 → 不再出现在
-/// 列表 / 智能路由 / 专家团。源 ec() 定义暂留 expert_groups.rs，后续可物理删除（功能已等同删除）。
+/// 已退役专家。
+/// 2026-07 自媒体改造：全部历史「百人专家团」整建制退役，常驻只保留「自媒体」组 14 人。
+/// 旧专家的 ec() 定义与 templates/experts/<group>/*.md 文件均保留不删（机制已有，随时可复活），
+/// 仅从花名册过滤掉 → 不再出现在列表 / 智能路由 / 专家团。新增专家一律进「自媒体」组，
+/// 不受本列表影响。
 const RETIRED: &[&str] = &[
-    // —— cut（删除）——
-    "nlp-engineer",
-    "rl-engineer",
-    "technical-writer-pro",
-    "graphql-architect",
-    "event-sourcing-architect",
-    "platform-engineer-devops",
-    "csharp-pro",
-    "blockchain-developer",
-    "context-manager",
-    "delivery-manager",
-    "scrum-master",
-    "scientific-researcher",
-    "osint-analyst",
-    // —— merge（并入他人后下线被合并的一方）——
-    "llm-architect",
-    "mlops-engineer",
-    "flutter-expert",
-    "brand-storyteller",
-    "payment-integration",
-    "microservices-architect",
-    "mermaid-expert",
+    // —— 编排/统帅 ——
+    "chief-strategist",
     "multi-agent-coordinator",
     "knowledge-synthesizer",
-    "ops-engineer",
-    "business-analyst",
-    "qa-expert",
-    "tech-debt-strategist",
-    "research-analyst",
-    "penetration-tester",
-    "appsec-coder",
-    "license-counsel",
-    "deployment-engineer",
-    "data-contract-engineer",
     "strategy-planner",
+    "context-manager",
+    // —— 系统架构 ——
+    "backend-architect",
+    "architecture-advisor",
+    "api-contract-designer",
+    "cloud-architect",
+    "kubernetes-architect",
+    "microservices-architect",
+    "graphql-architect",
+    "event-sourcing-architect",
+    "platform-engineer-arch",
+    // —— 语言专精 ——
+    "python-pro",
+    "typescript-pro",
+    "golang-pro",
+    "rust-pro",
+    "java-pro",
+    "cpp-pro",
+    "csharp-pro",
+    "sql-pro",
+    "ios-developer",
+    "kotlin-specialist",
+    "blockchain-developer",
+    "embedded-systems",
+    // —— 前端/移动 ——
+    "frontend-engineer",
+    "flutter-expert",
+    "accessibility-tester",
+    "mobile-developer",
+    // —— DevOps/基础设施 ——
+    "devops-engineer",
+    "deployment-engineer",
+    "terraform-specialist",
+    "docker-expert",
+    "sre-engineer",
+    "network-engineer",
+    "incident-responder",
+    "ops-engineer",
+    "platform-engineer-devops",
+    // —— 数据 ——
+    "data-scientist",
+    "data-engineer",
+    "data-analyst",
+    "database-architect",
+    "database-optimizer",
+    "vector-db-engineer",
+    "data-contract-engineer",
+    "dataviz-storyteller",
+    // —— AI/机器学习 ——
+    "ai-engineer",
+    "ml-engineer",
+    "mlops-engineer",
+    "llm-architect",
+    "nlp-engineer",
+    "prompt-engineer",
+    "rl-engineer",
+    // —— 安全/合规 ——
+    "security-auditor",
+    "penetration-tester",
+    "threat-modeling-expert",
+    "appsec-coder",
+    "compliance-privacy",
+    "license-counsel",
+    "privacy-engineer",
+    // —— 质量/治理 ——
+    "code-reviewer",
+    "test-automator",
+    "qa-expert",
+    "performance-engineer",
+    "debugger",
+    "refactoring-specialist",
+    "tech-debt-strategist",
+    // —— 专项技术 ——
+    "payment-integration",
+    "game-developer",
+    "legacy-modernizer",
+    "browser-automation",
+    "fintech-engineer",
+    "technical-writer-pro",
+    // —— 文档/技术写作 ——
+    "docs-architect",
+    "api-documenter",
+    "tutorial-engineer",
+    "mermaid-expert",
+    "technical-writer",
+    // —— 产品/项目/战略 ——
+    "product-manager",
+    "delivery-manager",
+    "scrum-master",
+    "business-analyst",
+    "ux-researcher",
+    "growth-experimenter",
+    "financial-modeler",
+    "pricing-strategist",
+    // —— 研究/分析 ——
+    "deep-research",
+    "competitive-analyst",
+    "market-researcher",
+    "trend-analyst",
+    "scientific-researcher",
+    "osint-analyst",
+    "research-analyst",
+    // —— 营销/内容 ——
+    "content-marketer",
+    "seo-specialist",
+    "growth-hacker",
+    "social-media-manager",
+    "brand-storyteller",
+    "visual-designer",
+    "pitch-coach",
+    "copywriter",
 ];
 
 static EXPERTS: once_cell::sync::Lazy<Vec<ExpertCard>> = once_cell::sync::Lazy::new(|| {
@@ -301,8 +384,11 @@ pub fn expert_groups() -> Vec<ExpertGroup> {
         ("product", "产品/项目/战略", "📐"),
         ("research", "研究/分析", "🔎"),
         ("marketing", "营销/内容", "📣"),
+        ("media", "自媒体", "📣"),
     ];
     let experts = all_experts_ref();
+    // 只返回「有在役专家」的分组：历史分组整建制退役后 count=0，会被过滤掉，
+    // 前端分组浏览因此只剩「自媒体」。分组计数总和仍等于花名册总数（见 expert_groups_complete 测试）。
     meta.iter()
         .map(|(id, name, icon)| ExpertGroup {
             id: (*id).into(),
@@ -310,6 +396,7 @@ pub fn expert_groups() -> Vec<ExpertGroup> {
             icon: (*icon).into(),
             count: experts.iter().filter(|e| e.group == *id).count(),
         })
+        .filter(|g| g.count > 0)
         .collect()
 }
 
@@ -943,6 +1030,80 @@ pub fn expert_recommend_from_kb(scope: Option<String>) -> KbRecommendation {
     }
 }
 
+// ───────────────────────── 自媒体统一专家团：平台提示词补丁 ─────────────────────────
+
+/// 自媒体组标识（唯一在役分组）。
+const MEDIA_GROUP: &str = "media";
+
+/// 取某专家的「基础画像」正文（平台无关，来自 templates/experts/media/{id}.md）。
+fn media_base_doc(expert_id: &str) -> Option<String> {
+    let e = all_experts_ref().iter().find(|e| e.id == expert_id)?;
+    expert_docs::build_expert_doc(
+        &e.claude_md_ref,
+        &e.name,
+        &e.role,
+        &e.description,
+        &e.keywords,
+        &e.capabilities,
+        &e.trigger_signals,
+        &e.complements,
+        &e.exclusive_with,
+        e.cost_tier,
+    )
+}
+
+/// 平台补丁查询结果。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaOverlay {
+    /// 补丁正文（source=="none" 时为空串）
+    pub content: String,
+    /// 来源："runtime"（运行时目录）| "seed"（内嵌种子）| "none"（无补丁）
+    pub source: String,
+}
+
+/// 自媒体专家「基础画像 + 平台补丁」拼接后的完整提示词。
+/// 无补丁时只返回基础画像；未知专家返回错误说明串（不 panic）。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn expert_media_doc(expert_id: String, platform: String) -> String {
+    let base = match media_base_doc(&expert_id) {
+        Some(b) => b,
+        None => return format!("未知自媒体专家：{}", expert_id),
+    };
+    let (source, content) = expert_docs::media_overlay_resolve(&platform, &expert_id);
+    if source == "none" || content.trim().is_empty() {
+        return base;
+    }
+    format!("{base}\n\n## 平台补丁：{platform}\n{content}")
+}
+
+/// 查询某平台某专家的补丁内容与来源（供前端补丁编辑器回显）。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn expert_media_overlay_get(platform: String, expert_id: String) -> MediaOverlay {
+    let (source, content) = expert_docs::media_overlay_resolve(&platform, &expert_id);
+    MediaOverlay { content, source }
+}
+
+/// 写运行时补丁；content 为空串 = 删除运行时补丁，回落种子/基础画像。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn expert_media_overlay_set(
+    platform: String,
+    expert_id: String,
+    content: String,
+) -> Result<(), String> {
+    expert_docs::media_overlay_write(&platform, &expert_id, &content)
+}
+
+/// 只返回「自媒体」组的 14 位专家。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn expert_media_list() -> Vec<ExpertCard> {
+    all_experts_ref()
+        .iter()
+        .filter(|e| e.group == MEDIA_GROUP)
+        .cloned()
+        .collect()
+}
+
 // ───────────────────────── Tauri commands ─────────────────────────
 
 #[cfg(test)]
@@ -987,21 +1148,25 @@ mod tests {
 
     #[test]
     fn all_experts_count() {
-        // 2026-06-16 审计后裁撤约 33 个冗余/冷门专家（见 RETIRED），常驻精简到 ~72。
+        // 2026-07 自媒体改造：历史专家整建制退役，常驻只剩「自媒体」组 14 人。
         let count = all_experts().len();
-        assert!(count >= 60, "专家数量应 >= 60，实际 {}", count);
+        assert_eq!(count, 14, "在役专家应为自媒体组 14 人，实际 {}", count);
+        assert!(
+            all_experts().iter().all(|e| e.group == "media"),
+            "在役专家应全部属于「自媒体」组"
+        );
         assert!(
             !all_experts()
                 .iter()
                 .any(|e| RETIRED.contains(&e.id.as_str())),
-            "已裁撤专家不应出现在花名册"
+            "已退役专家不应出现在花名册"
         );
     }
 
     #[test]
     fn routing_returns_results() {
         let results = expert_route(RouteRequest {
-            query: "帮我做一个带支付的 SaaS 落地页，要好看，并发上线".into(),
+            query: "帮我写一篇小红书爆款笔记并排版投递".into(),
             limit: Some(5),
             group_filter: None,
         });
@@ -1017,7 +1182,7 @@ mod tests {
 
     #[test]
     fn auto_match_returns_primary() {
-        let results = expert_match_auto("帮我做个支付功能".into());
+        let results = expert_match_auto("帮我做个自媒体选题".into());
         assert!(!results.is_empty());
         // 主选应该有较高的相似度
         let primary = &results[0];
@@ -1044,7 +1209,7 @@ mod tests {
     #[test]
     fn route_normalizes_and_marks_primary() {
         let results = expert_route(RouteRequest {
-            query: "帮我接入支付，做对账和订阅计费".into(),
+            query: "帮我写公众号文章并排版投递".into(),
             limit: Some(5),
             group_filter: None,
         });
@@ -1065,7 +1230,7 @@ mod tests {
     /// debug：有命中查询应至少一行 would_select=true（治「召集徽标永不出现」）。
     #[test]
     fn route_debug_has_selectable() {
-        let rows = expert_route_debug("做一个带支付的前端落地页".into());
+        let rows = expert_route_debug("写一篇知乎文章".into());
         assert!(!rows.is_empty(), "应有命中行");
         assert!(
             rows.iter().any(|r| r.would_select),
@@ -1078,7 +1243,7 @@ mod tests {
     #[test]
     fn route_block_fires_on_domain_not_chitchat() {
         assert!(
-            route_block("帮我写个 python 异步爬虫").is_some(),
+            route_block("帮我写一篇公众号爆款文章").is_some(),
             "领域查询应注入专家块"
         );
         assert!(route_block("嗯嗯好的谢谢你").is_none(), "闲聊不应注入");
@@ -1089,12 +1254,57 @@ mod tests {
     /// 审美的人格、且让它的准则驱动模型」。
     #[test]
     fn route_block_injects_full_expert_prompt() {
-        let block = route_block("你帮我写一个这个的ppt").expect("ppt 应命中专家");
-        assert!(block.contains("视觉设计"), "应路由到视觉设计专家");
+        let block = route_block("帮我写一篇小红书笔记").expect("写作应命中专家");
+        assert!(block.contains("主笔"), "应路由到主笔专家");
         let head: String = block.chars().take(200).collect();
         assert!(
-            block.contains("项目符号墙") || block.contains("发布会 slide"),
-            "应注入 visual-designer.md 的实质提示词(证明吃的是文件全文而非标签),实际开头:\n{head}"
+            block.contains("平台补丁") || block.contains("AI 痕迹"),
+            "应注入 media-writer.md 的实质提示词(证明吃的是文件全文而非标签),实际开头:\n{head}"
         );
+    }
+
+    /// 自媒体列表恰好 14 人，且全在 media 组。
+    #[test]
+    fn media_list_is_14() {
+        let list = expert_media_list();
+        assert_eq!(list.len(), 14, "自媒体组应为 14 人，实际 {}", list.len());
+        assert!(list.iter().all(|e| e.group == "media"));
+        assert!(list.iter().any(|e| e.id == "media-strategist"));
+    }
+
+    /// expert_media_doc：基础画像 + 平台补丁（有种子补丁时）拼接；补丁段落头存在。
+    #[test]
+    fn media_doc_merges_seed_overlay() {
+        let doc = expert_media_doc("media-writer".into(), "xhs".into());
+        assert!(doc.contains("主笔"), "应含基础画像");
+        assert!(doc.contains("## 平台补丁：xhs"), "应含平台补丁段落头");
+        assert!(doc.contains("小红书"), "应含 xhs 种子补丁内容");
+    }
+
+    /// 无种子补丁的平台/专家 → 只返回基础画像，不带补丁段落头。
+    #[test]
+    fn media_doc_without_overlay_is_base_only() {
+        // media-critic 未提供种子补丁 → 应回落纯基础画像
+        let doc = expert_media_doc("media-critic".into(), "wechat".into());
+        assert!(doc.contains("杠精"), "应含基础画像");
+        assert!(!doc.contains("## 平台补丁"), "无补丁时不应有补丁段落头");
+    }
+
+    /// overlay_get：xhs/media-writer 有内嵌种子 → source=seed，content 非空。
+    #[test]
+    fn media_overlay_get_reads_seed() {
+        let ov = expert_media_overlay_get("xhs".into(), "media-writer".into());
+        assert_eq!(ov.source, "seed");
+        assert!(!ov.content.trim().is_empty());
+        // 未知平台/专家 → none
+        let none = expert_media_overlay_get("nosuch".into(), "media-writer".into());
+        assert_eq!(none.source, "none");
+    }
+
+    /// 非法 platform/expert_id 不落盘、报错（防路径穿越）。
+    #[test]
+    fn media_overlay_set_rejects_bad_id() {
+        let r = expert_media_overlay_set("../etc".into(), "media-writer".into(), "x".into());
+        assert!(r.is_err(), "非法 platform 应报错");
     }
 }

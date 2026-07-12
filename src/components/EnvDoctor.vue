@@ -10,7 +10,6 @@ import {
   type ToolStatus,
   type UvCacheInfo,
 } from "../tauri";
-import McpConfigModal from "./McpConfigModal.vue";
 
 /**
  * 环境医生 — 新用户开箱的「环境监测 + 配置安装」。
@@ -551,11 +550,6 @@ const npmReady = computed(() => !!report.value?.npm.found);
           </template>
         </div>
 
-        <!-- MCP 服务配置 -->
-        <div v-if="!props.gate" class="mcp-section"
-        >
-          <McpConfigModal inline @close="() => {}" />
-        </div>
       </template>
     </div>
   </div>
@@ -868,10 +862,5 @@ const npmReady = computed(() => !!report.value?.npm.found);
 }
 .link:hover:not(:disabled) { text-decoration: underline; }
 
-.mcp-section {
-  margin-top: 28px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-soft);
-}
 .link:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

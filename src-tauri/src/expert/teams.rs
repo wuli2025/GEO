@@ -51,90 +51,43 @@ fn t(
     }
 }
 
-/// 8 支成建制业务团（覆盖产品/创作/研究/数据/安全/上线/增长/质量）。
+/// 唯一在役业务团：自媒体统一专家团。
+///
+/// 2026-07 自媒体改造：历史 8 支业务团整建制退役（源定义见下方注释保留），
+/// 只保留这一支覆盖「选题→调研→写作→去AI→核查→评审→排版→配图→投递→复盘」全链路的团。
+/// 领衔 = 选题战略官（media-strategist），成员 = 其余 13 位自媒体专家。
+///
+/// 向后兼容：`expert_team_get` / `expert_recommend_from_kb` / `team_apply` 找不到旧团 id 时，
+/// 天然回落到「无匹配」路径；`expert_recommend_from_kb` 在唯一团上打分，弱信号也会推荐本团，
+/// 不会 panic。
 pub fn all_teams() -> Vec<ExpertTeam> {
-    vec![
-        t(
-            "team-fullstack-product",
-            "全栈产品团",
-            "🚀",
-            "把一个想法做成能上线的产品",
-            "战略师领衔，从需求到上线一条龙：产品定义→后端边界→前端体验→部署发布。适合「帮我做个 X 应用/网站/SaaS」这类成品需求。",
-            "chief-strategist",
-            &["product-manager", "backend-architect", "frontend-engineer", "devops-engineer"],
-            &["产品", "全栈", "上线", "SaaS", "应用"],
-        ),
-        t(
-            "team-creative-content",
-            "创作内容团",
-            "🎨",
-            "PPT / 网页 / 自媒体 / 视频，要美要打动人",
-            "文案官领衔（含品牌叙事），成品兼顾「好看」和「打动人」：文案口播×视觉设计×落地工程×内容分发。",
-            "copywriter",
-            &["visual-designer", "frontend-engineer", "social-media-manager", "content-marketer"],
-            &["创作", "PPT", "视觉", "文案", "自媒体"],
-        ),
-        t(
-            "team-research-diligence",
-            "研究尽调团",
-            "🔬",
-            "调研 / 选型 / 尽调，结论带来源",
-            "深度研究领衔，多源检索×竞品对标×市场规模×趋势研判×数据印证，结论可追溯。",
-            "deep-research",
-            &["competitive-analyst", "market-researcher", "trend-analyst", "data-analyst"],
-            &["研究", "调研", "尽调", "选型", "竞品"],
-        ),
-        t(
-            "team-data-insight",
-            "数据洞察团",
-            "📊",
-            "从数据管道到可视化洞察",
-            "数据科学家领衔，数据工程×指标分析×查询优化×可视化叙事，把原始数据讲成能决策的故事。",
-            "data-scientist",
-            &["data-engineer", "data-analyst", "database-optimizer", "dataviz-storyteller"],
-            &["数据", "分析", "建模", "可视化", "洞察"],
-        ),
-        t(
-            "team-security-compliance",
-            "安全合规团",
-            "🛡️",
-            "审计 / 渗透 / 威胁建模 / 合规",
-            "安全审计员领衔，OWASP 审计×STRIDE 威胁建模×隐私工程×合规落地，对外暴露前先过这一关。",
-            "security-auditor",
-            &["threat-modeling-expert", "compliance-privacy", "privacy-engineer"],
-            &["安全", "渗透", "合规", "审计", "隐私"],
-        ),
-        t(
-            "team-devops-launch",
-            "运维上线团",
-            "⚙️",
-            "容器化 → 发布 → 可观测 → 止血",
-            "DevOps 工程师领衔，镜像瘦身×集群编排×SLO 可观测×事故响应，让产品稳稳上线、出事能止血。",
-            "devops-engineer",
-            &["docker-expert", "kubernetes-architect", "sre-engineer", "incident-responder"],
-            &["部署", "容器", "上线", "运维", "可观测"],
-        ),
-        t(
-            "team-growth-marketing",
-            "增长营销团",
-            "📣",
-            "获客 / 增长 / 内容矩阵",
-            "增长黑客领衔，内容矩阵×SEO 收录×增长实验×社媒运营，把产品推到用户面前并留住。",
-            "growth-hacker",
-            &["content-marketer", "seo-specialist", "growth-experimenter", "social-media-manager"],
-            &["增长", "营销", "获客", "SEO", "内容"],
-        ),
-        t(
-            "team-quality-refactor",
-            "质量重构团",
-            "🔬",
-            "评审 / 测试 / 重构 / 性能",
-            "代码评审员领衔，缺陷评审×自动化测试×坏味道重构×性能调优，让代码合并前可靠、长期可维护。",
-            "code-reviewer",
-            &["test-automator", "refactoring-specialist", "performance-engineer", "debugger"],
-            &["质量", "测试", "重构", "性能", "评审"],
-        ),
-    ]
+    vec![t(
+        "team-media",
+        "自媒体统一专家团",
+        "📣",
+        "选题→写作→去AI→核查→排版→配图→投递→复盘 全链路",
+        "选题战略官领衔的自媒体成建制团队：从热点选题、素材调研、正文写作、去 AI 腔、事实核查、七维评审，到排版、配图、多平台草稿投递与数据复盘，一条龙但按需组阵。平台文风由「平台补丁」运行时叠加，同一支团适配公众号/小红书/知乎/头条/百家号/B站/抖音 7 个平台。",
+        "media-strategist",
+        &[
+            "media-researcher",
+            "media-writer",
+            "media-typesetter",
+            "media-publisher",
+            "media-reviewer",
+            "media-critic",
+            "media-factchecker",
+            "media-deaiflavor",
+            "media-imagedirector",
+            "media-analytics",
+            "media-accountkeeper",
+            "media-competitor",
+            "media-georestructurer",
+        ],
+        &[
+            "自媒体", "选题", "爆款", "写作", "排版", "投递", "公众号", "小红书", "知乎",
+            "运营", "涨粉", "内容",
+        ],
+    )]
 }
 
 /// 用业务团 + 成员卡片组装一段「战略师领衔·按需召集」的编排型 CLAUDE.md。

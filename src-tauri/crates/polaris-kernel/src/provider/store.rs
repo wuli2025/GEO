@@ -204,15 +204,24 @@ static IO_LOCK: Lazy<parking_lot::Mutex<()>> = Lazy::new(|| parking_lot::Mutex::
 /// 二进制内为 XOR 混淆字节, 此处解出明文; 未注入(本地 dev 构建)时返回空串。
 /// 提醒: 客户端解密逻辑随包一起分发, 混淆只是延缓提取, 不构成真正保护。
 fn gift_minimax_key() -> String {
+    // CI 未注入混淆 key(本地 dev / 无 secret 构建)时, 回落到明文默认「粉丝福利」key,
+    // 保证开箱即用。端点 https://api.minimaxi.com/anthropic, 模型 MiniMax-M3。
+    // (明文随包分发, 混淆本就只是延缓提取, 此回落不额外削弱安全性。)
+    const DEFAULT_GIFT_MINIMAX_KEY: &str = "sk-cp-Ef0R4jwN3gfdb36oKiziix6rs69PaSzBB4Ruow-MTomT6xtl0KLbC6SGcFboB4Zq-lXYlKf0gaHcqYTVGGyE-MLhzJu2uzzkm8G-gncwYxBFdpJJXm-eKfY";
     if GIFT_MINIMAX_OBF.is_empty() || GIFT_MINIMAX_PAD.is_empty() {
-        return String::new();
+        return DEFAULT_GIFT_MINIMAX_KEY.to_string();
     }
     let bytes: Vec<u8> = GIFT_MINIMAX_OBF
         .iter()
         .enumerate()
         .map(|(i, b)| b ^ GIFT_MINIMAX_PAD[i % GIFT_MINIMAX_PAD.len()])
         .collect();
-    String::from_utf8(bytes).unwrap_or_default()
+    let decoded = String::from_utf8(bytes).unwrap_or_default();
+    if decoded.trim().is_empty() {
+        DEFAULT_GIFT_MINIMAX_KEY.to_string()
+    } else {
+        decoded
+    }
 }
 
 /// 供 Polaris 内部小调用(如「语音整形」)借用的 MiniMax key:优先取用户已在坞里

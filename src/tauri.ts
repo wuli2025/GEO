@@ -404,21 +404,112 @@ export const feishu = {
 // ──────────────────────────────────────────────────────────────
 // 自媒体「账号管理」
 // ──────────────────────────────────────────────────────────────
+export type MediaPlatform =
+  | "wechat" | "xhs" | "zhihu" | "toutiao" | "baijia" | "bilibili" | "douyin";
+export const MEDIA_PLATFORMS: { id: MediaPlatform; name: string }[] = [
+  { id: "wechat", name: "公众号" },
+  { id: "xhs", name: "小红书" },
+  { id: "zhihu", name: "知乎" },
+  { id: "toutiao", name: "头条" },
+  { id: "baijia", name: "百家号" },
+  { id: "bilibili", name: "B站" },
+  { id: "douyin", name: "抖音" },
+];
 export interface MediaAccountStatus {
-  platform: "wechat" | "xhs";
+  platform: MediaPlatform;
   label: string;
   bound: boolean;
   profileDir: string;
   /** profile 最近活动时间（unix 秒）；未绑定为 null */
   lastActive: number | null;
   detail: string;
+  name?: string;
+  loginUrl?: string;
+  draftUrl?: string;
 }
 export const mediaAccounts = {
   /** 探测各平台登录态（读固定 profile 目录） */
   status: () => invoke<MediaAccountStatus[]>("media_accounts_status"),
   /** 解绑某平台：清除登录态 profile，强制下次重新扫码 */
-  forget: (platform: "wechat" | "xhs") =>
+  forget: (platform: MediaPlatform) =>
     invoke<string>("media_account_forget", { platform }),
+  /** 打开持久化登录浏览器窗口（登录态永久保留在 profile，窗口由用户自己关闭） */
+  open: (platform: MediaPlatform, target: "login" | "draft" = "login") =>
+    invoke<{ ok: boolean; message: string }>("media_account_open", { platform, target }),
+};
+
+// ──────────────────────────────────────────────────────────────
+// 自媒体运营中心：题库 / 规划队列 / 平台设置 / 度量（mediaops.rs）
+// ──────────────────────────────────────────────────────────────
+export interface MediaTopic {
+  id: string; platform: MediaPlatform; title: string; angle: string;
+  keywords: string[]; status: "pool" | "picked" | "drafted" | "published" | "rejected";
+  source: string; note: string; createdAt: number;
+}
+export interface MediaQueueItem {
+  id: string; platform: MediaPlatform; topicId: string | null; title: string;
+  scheduledAt: string | null;
+  status: "queued" | "running" | "draft_uploaded" | "done" | "failed";
+  articlePath: string | null; note: string; updatedAt: number;
+}
+export interface MediaWorkflowStep { step: string; expertId: string; skillId: string; note: string }
+export interface MediaPlatformSettings {
+  platform: MediaPlatform; enabled: boolean; sendMode: "ai" | "manual";
+  weeklyQuota: number; workflow: MediaWorkflowStep[];
+}
+export interface MediaKpi {
+  runs: number; drafts: number; published: number; failed: number;
+  successRate: number; tokens: number; cost: number;
+}
+export const mediaOps = {
+  state: () => invoke<{
+    topics: MediaTopic[]; queue: MediaQueueItem[];
+    settings: MediaPlatformSettings[]; metrics: any[];
+  }>("mediaops_state"),
+  topicAdd: (platform: MediaPlatform, title: string, angle?: string, keywords?: string[], source?: string) =>
+    invoke<MediaTopic>("mediaops_topic_add", { platform, title, angle, keywords, source }),
+  topicUpdate: (id: string, patch: { status?: string; title?: string; angle?: string; note?: string }) =>
+    invoke<MediaTopic>("mediaops_topic_update", { id, ...patch }),
+  topicDelete: (id: string) => invoke<void>("mediaops_topic_delete", { id }),
+  queueAdd: (platform: MediaPlatform, title: string, topicId?: string, scheduledAt?: string) =>
+    invoke<MediaQueueItem>("mediaops_queue_add", { platform, title, topicId, scheduledAt }),
+  queueUpdate: (id: string, patch: { status?: string; note?: string; articlePath?: string }) =>
+    invoke<MediaQueueItem>("mediaops_queue_update", { id, ...patch }),
+  queueDelete: (id: string) => invoke<void>("mediaops_queue_delete", { id }),
+  settingsSet: (platform: MediaPlatform, patch: Partial<MediaPlatformSettings>) =>
+    invoke<MediaPlatformSettings>("mediaops_settings_set", { platform, patch }),
+  metricAdd: (platform: MediaPlatform, kind: "run" | "draft" | "publish" | "fail", tokens?: number, cost?: number, detail?: string) =>
+    invoke<void>("mediaops_metric_add", { platform, kind, tokens, cost, detail }),
+  metricsSummary: () =>
+    invoke<{ d7: MediaKpi; d30: MediaKpi; perPlatform: Record<string, MediaKpi> }>("mediaops_metrics_summary"),
+};
+
+// ──────────────────────────────────────────────────────────────
+// 火山方舟 API 中心（ark.rs）：生图 / 连通测试 / 模型列表
+// ──────────────────────────────────────────────────────────────
+export interface ArkConfig { apiKey: string; baseUrl: string; imageModel: string; chatModel: string }
+export const ark = {
+  configGet: () => invoke<ArkConfig>("ark_config_get"),
+  configSet: (patch: Partial<ArkConfig>) => invoke<ArkConfig>("ark_config_set", { patch }),
+  test: () => invoke<{ ok: boolean; latencyMs: number; message: string }>("ark_test"),
+  models: () => invoke<string[]>("ark_models"),
+  imageGenerate: (prompt: string, size?: string, outPath?: string) =>
+    invoke<{ path: string; model: string }>("ark_image_generate", { prompt, size, outPath }),
+  chatTest: (prompt: string, model?: string) =>
+    invoke<{ ok: boolean; content: string; latencyMs: number }>("ark_chat_test", { prompt, model }),
+};
+
+// ──────────────────────────────────────────────────────────────
+// 自媒体统一专家团：平台提示词补丁（expert.rs 扩展）
+// ──────────────────────────────────────────────────────────────
+export const expertMedia = {
+  list: () => invoke<any[]>("expert_media_list"),
+  doc: (expertId: string, platform: MediaPlatform) =>
+    invoke<string>("expert_media_doc", { expertId, platform }),
+  overlayGet: (platform: MediaPlatform, expertId: string) =>
+    invoke<{ content: string; source: "runtime" | "seed" | "none" }>("expert_media_overlay_get", { platform, expertId }),
+  overlaySet: (platform: MediaPlatform, expertId: string, content: string) =>
+    invoke<void>("expert_media_overlay_set", { platform, expertId, content }),
 };
 
 // ──────────────────────────────────────────────────────────────

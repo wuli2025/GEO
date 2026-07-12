@@ -119,11 +119,8 @@ jobs:
           # `security import ""` → SecKeychainItemImport 失败。mac 走 ad-hoc 签名
           # (tauri.conf bundle.macOS.signingIdentity = "-")，根本不需要 Apple 证书。
         with:
-          # 不在 workflow 内发布 Release —— 实测本仓库 Actions GITHUB_TOKEN 即便 Workflow
-          # 权限为 write、job 也声明 contents:write, 调 create-a-release 仍返回
-          # "Resource not accessible by integration"(账号级限制, 非 fork/权限位问题)。
-          # 故只构建 + 用更新私钥签名, 产物随 if:always() 上传为 artifact, 由仓库 owner
-          # 本机用 `gh` 建 Release 并附带手工合并的 latest.json(见 docs/release-manual.md)。
+          # tauri-action 只负责「构建 + 用更新私钥签名」,不在此处建 Release:
+          # 两个平台的产物要合并进同一份 latest.json,得等两边都跑完 → 交给下面的 publish job。
           args: ${{ matrix.args }}
 
       - name: Upload bundles as artifacts
@@ -136,3 +133,85 @@ jobs:
           path: |
             src-tauri/target/release/bundle/**
             src-tauri/target/universal-apple-darwin/release/bundle/**
+
+  # ─────────────────────────────────────────────────────────────
+  # 发布：等两个平台都构建完 → 收齐安装包与 .sig → 合并成一份 latest.json →
+  # 建 GitHub Release 并把三者一起上传。应用端的更新端点
+  # (tauri.conf plugins.updater.endpoints) 读的就是 releases/latest/download/latest.json。
+  #
+  # token 优先用 GH_PAT(仓库 Secrets 里配一个有 repo/contents:write 权限的 PAT)。
+  # 本账号的 Actions GITHUB_TOKEN 建 Release 曾返回 "Resource not accessible by
+  # integration",配了 GH_PAT 就绕开;没配则回落 GITHUB_TOKEN 再试一次。
+  # ─────────────────────────────────────────────────────────────
+  publish:
+    name: Publish release + latest.json
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect bundles & build latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          mkdir -p dist
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+
+          # Windows: NSIS 安装包 + 其 .sig(createUpdaterArtifacts=true 时由 tauri 生成)
+          win_exe=$(find artifacts -path '*/nsis/*' -name '*-setup.exe' | head -1)
+          win_sig=$(find artifacts -path '*/nsis/*' -name '*-setup.exe.sig' | head -1)
+          # macOS: 更新走 .app.tar.gz(不是 dmg);dmg 只作为人工下载用
+          mac_tar=$(find artifacts -name '*.app.tar.gz' | head -1)
+          mac_sig=$(find artifacts -name '*.app.tar.gz.sig' | head -1)
+          mac_dmg=$(find artifacts -name '*.dmg' | head -1)
+
+          [ -n "$win_exe" ] && [ -n "$win_sig" ] || { echo "::error::缺 Windows 安装包或其 .sig"; exit 1; }
+          [ -n "$mac_tar" ] && [ -n "$mac_sig" ] || { echo "::error::缺 macOS .app.tar.gz 或其 .sig"; exit 1; }
+
+          cp "$win_exe" "$mac_tar" dist/
+          [ -n "$mac_dmg" ] && cp "$mac_dmg" dist/ || true
+
+          # latest.json:两个平台合进同一份。mac 是 universal 包,两个架构键都指向它。
+          python3 - "$VERSION" "$base" "$(basename "$win_exe")" "$win_sig" \
+                    "$(basename "$mac_tar")" "$mac_sig" <<'PY'
+          import json, sys, datetime, pathlib
+          version, base, win_name, win_sig, mac_name, mac_sig = sys.argv[1:7]
+          win_url = f"{base}/{win_name}"
+          mac_url = f"{base}/{mac_name}"
+          mac_sig_text = pathlib.Path(mac_sig).read_text().strip()
+          entry = {"signature": mac_sig_text, "url": mac_url}
+          out = {
+              "version": version,
+              "notes": f"Polaris · GEO {version}",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc)
+                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": {
+                  "windows-x86_64": {
+                      "signature": pathlib.Path(win_sig).read_text().strip(),
+                      "url": win_url,
+                  },
+                  "darwin-x86_64": entry,
+                  "darwin-aarch64": entry,
+              },
+          }
+          pathlib.Path("dist/latest.json").write_text(
+              json.dumps(out, ensure_ascii=False, indent=2))
+          print(json.dumps(out, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: Polaris · GEO ${{ github.ref_name }}
+          prerelease: false
+          # 必须是 latest release,应用端读的是 /releases/latest/download/latest.json
+          make_latest: true
+          files: dist/*

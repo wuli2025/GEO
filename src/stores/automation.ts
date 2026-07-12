@@ -71,14 +71,8 @@ export interface FlowDraft {
 }
 
 const STORAGE_KEY = "polaris:automation-flows:v1";
-const SEED_KEY = "polaris:automation-flows-seeded:v1";
-// v2 增补「网页演示视频成片 / Harness 工程实践」两条（源自 ConardLi 教程）：对老用户也补一次，删除后不回种
-const SEED_V2_KEY = "polaris:automation-flows-seeded:v2";
-// v3 增补「公众号 / 小红书 全链路运营（交互决策）」两条：从选题→风格→成稿→渲染一条龙，
-// 关键决策点停下来给选项让用户挑或自定义，全程可见 AI 思考；删除后不回种。
-const SEED_V3_KEY = "polaris:automation-flows-seeded:v3";
-// v4 增补「微信聊天 · 每日待办」一条（每日定时、对接 wechat-tasks 技能）：对老用户也补一次，删除后不回种
-const SEED_V4_KEY = "polaris:automation-flows-seeded:v4";
+// 一次性清空旧数据(含历史内置流程)的标记；见 load()
+const PURGE_KEY = "polaris:automation-flows-purged:v1";
 
 export const FLOW_COLORS = [
   "#2c4661", // 墨蓝
@@ -92,289 +86,6 @@ function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-// ───────────────────────── 内置流程的提示词 ─────────────────────────
-// 共同约定：用 deep-research 联网搜最近资讯 → 用本项目知识库(PolarisKB，沿双链用
-// Read/Glob/Grep 自取) 模仿既有风格撰写 → 多维评审打分并据此修订 → 成品落到「草稿箱」
-// 文件(.md + 可预览 .html)，**绝不**自动对外发布，留给用户自己发。
-
-const DRAFT_CONVENTION = `\n\n## 产出约定（务必遵守）
-- 全程**不要**真的对外发布到任何平台；你没有、也不需要发布权限。
-- 把最终成品保存为文件放进本会话的产物目录（草稿箱）：一份 Markdown 正文 + 一份自包含、可直接预览的 HTML。文件名带「草稿」二字与日期。
-- 在回答末尾用一句话点明生成了哪些草稿文件，并提示「请在草稿箱预览后自行决定是否发布」。`;
-
-const wechatPrompt = `你是一名资深微信公众号主编，要为下面这个方向产出一篇**可直接进草稿箱**的公众号长文（不发布）。
-
-【主题方向】__________（在这里填你想写的方向/选题，可留一句话即可）
-
-请按以下步骤完成，并把过程与结论写清楚：
-1. **选题调研（联网）**：围绕该方向用深度搜索检索「最近一段时间」的新闻、动态与高赞讨论，提炼 3-5 个有传播潜力的切入角度，标注信息来源与时间。挑出最优角度，给出本文核心论点/独特价值。
-2. **取材与风格对齐**：阅读本项目的知识库（PolarisKB，沿双链用 Read/Glob/Grep 自取相关条目），让选材、观点与**既有写作风格**保持一致，避免与知识库矛盾。
-3. **成文**：按「标题 → 开头钩子 → 框架 → 正文(1500-3000字) → 结尾行动号召」写成稿，小标题清晰、论点有论据(数据/案例/引用)、节奏好读，并在合适处标注【配图建议】。给 5 个备选标题并推荐一个。
-4. **多维评审**：以主编视角对成稿做多维度打分(满分10)并逐条点评：①标题/开头打开率 ②逻辑与论据 ③信息增量与可信度 ④阅读节奏与排版 ⑤结尾记忆点。对每条给「问题→具体改法」，据此产出**修订后的终稿**与一句话推送摘要。${DRAFT_CONVENTION}`;
-
-const xhsPrompt = `你是一名深耕小红书的资深内容操盘手，要为下面这个方向产出一篇**可直接进草稿箱**的小红书爆款笔记（不发布）。
-
-【主题方向】__________（在这里填你想写的方向/选题）
-
-请按以下步骤完成：
-1. **选题调研（联网）**：用深度搜索检索该方向「最近」的热点、爆款选题与用户痛点，提炼 3 个候选角度(痛点型/教程型/反差种草型)，标注来源与时间，挑出最优角度与 1 个核心卖点。
-2. **风格对齐**：阅读本项目知识库（PolarisKB，沿双链用 Read/Glob/Grep 自取），让语气与选材贴合**既有风格**——真实、有温度、像朋友分享。
-3. **成稿**：产出 5 个 20 字内备选标题(覆盖数字/痛点/反差/身份代入多类钩子，含 1-2 个 emoji)并推荐一个；正文 300-600 字，开头两行制造停留，主体分点(小标题+emoji+短句多换行)，结尾引导互动；末尾给 8-12 个话题标签(#)，大词+精准长尾+热点词。
-4. **爆款自检评审**：以平台流量视角打分(满分10)并逐项点评(标题点击欲/前三行留人/价值点/互动引导/标签精准度)，每条给「问题→改法」，产出**修订后的最终版**。${DRAFT_CONVENTION}`;
-
-const bilibiliPrompt = `你是一名严谨的知识库维护者，本流程的目标是**用 B 站同领域内容反哺、补全本项目的知识库**（不产出对外稿件）。
-
-【关注领域】__________（在这里填你要补全知识库的领域/主题）
-
-请按以下步骤完成：
-1. **同领域调研（联网）**：用深度搜索以 B 站为主、辅以其他来源，检索该领域「最近」较优质、较高互动的视频/专栏所覆盖的知识点与观点，整理成一份「外部知识点清单」，每条标注来源与时间。
-2. **对照本知识库找缺口**：阅读本项目知识库（PolarisKB，沿双链用 Read/Glob/Grep 通读相关条目），把「外部知识点清单」与现有条目逐项对照，产出三类结论：
-   - **可补全**：知识库缺失/陈旧、且有可靠来源可补的点；
-   - **需存疑**：来源不足或有争议、不宜直接写入的点（说明原因）；
-   - **已覆盖**：知识库已有的点（避免重复）。
-3. **补全知识库**：对「可补全」的点，按知识库既有的条目格式与双链风格，新增/更新相应 Markdown 条目（放回知识库对应位置，建立双链），每条注明来源与补充日期；不要把「需存疑」的内容写进库。
-4. **小结**：列出本次新增/更新了哪些条目、跳过了哪些及原因，便于人工复核。${DRAFT_CONVENTION}`;
-
-// ── v2：源自 ConardLi 教程的两条流程 ──
-const videoPrompt = `你要把一段文稿做成「可录屏成片」的网页演示稿（不发布、不录屏，只产出可被我拿去录屏的成品文件）。这就是「视频效果怎么做的」那套：把稿子做成 16:9、点击逐页推进、像视频一样的网页演示。
-
-【本片内容/主题】__________（在这里贴文稿或写一句话主题）
-
-请按以下步骤完成：
-1. **脚本与大纲（一次产出 + 自检）**：产出 script.md（逐章口播稿，每章一个核心信息、口语可念、单页信息量克制）与 outline.md（章节切分、每章视觉意图、动画/图示点、素材清单）。自检：每页是否只讲一件事、开场 5 秒有无钩子、有无大段文字堆一屏；不达标先改稿。
-2. **取材与风格对齐**：阅读本项目知识库（PolarisKB，沿双链用 Read/Glob/Grep 自取）让选材与措辞贴合既有风格，必要时联网补最新信息并标来源。
-3. **做成自包含网页演示**：产出一份**单文件、可直接双击预览的 HTML**：固定 1920×1080 舞台、16:9，点击/方向键逐页推进（带页码与进度）；一页一个核心信息、文字少而大、留白充足、配色统一、动画为信息服务而非炫技。第 1 页定调（视觉锚点），其余页风格与之一致。做一次反「AI 廉价感」自检并据此打磨。
-4. **小结**：说明产出了哪些文件（script.md / outline.md / 演示.html），以及**我接下来需要做什么**——即用屏幕录制软件按 16:9 全屏录制点击翻页过程（如需旁白可后期配音，或先配 MiniMax key 再做配音版）。${DRAFT_CONVENTION}`;
-
-const harnessPrompt = `本流程目标：把「Claude Code 作为生产力 harness 的工程实践」调研清楚并沉淀成可用手册（参考 ConardLi 教程与下列资源），既补进本项目知识库，也产出一份草稿供我查阅。
-
-【关注角度】__________（可留空＝通用；或填你最想强化的一项：技能化/供应商切换/配音/编排）
-
-参考资源（请联网核实其当前用法与最新信息，并标注来源与时间）：
-- Claude Code 文档 https://code.claude.com/docs/zh-CN/overview
-- garden-skills（可复用 skill 合集）https://github.com/ConardLi/garden-skills
-- MiniMax CLI https://github.com/MiniMax-AI/cli
-- CC Switch（一键切 Claude Code 供应商配置）https://github.com/farion1231/cc-switch
-
-请按以下步骤完成：
-1. **调研（联网）**：围绕「harness = 把模型包成可靠生产力的工程层（提示词/技能、工具与权限、供应商与模型选择、编排与上下文）」，结合上面资源整理出当前的具体工程实践要点，每条标来源与时间。
-2. **对照本知识库找缺口**：通读 PolarisKB 相关条目（沿双链用 Read/Glob/Grep），产出三类结论：可补全 / 需存疑 / 已覆盖。
-3. **沉淀成手册并补库**：把「可补全」的要点按知识库既有条目格式与双链风格写成一份「Claude Code Harness 工程实践」手册条目（含：技能化沉淀、按任务切换供应商[CC Switch/供应商坞]、MiniMax CLI 接入、子代理编排与复盘四块，每块给可执行动作），放回知识库对应位置并建立双链，注明来源与日期；「需存疑」的不写入。
-4. **小结**：列出新增/更新了哪些条目、跳过了哪些及原因，便于人工复核。${DRAFT_CONVENTION}`;
-
-// ── v3：公众号 / 小红书「全链路运营」交互决策流程 ──
-// 与上面的「自动撰稿」单发版不同：这是一条**带停顿的决策链路**，每个关键点先把思考
-// 讲出来、给编号选项让用户挑、也允许用户直接输入覆盖；风格可调（给几种挑 / 自定义）。
-// 在运营规划里点一下就跳进对话框，顺着这段提示词把决策一步步走完，过程都看得见。
-const wechatChainPrompt = `你是 Polaris 的「微信公众号全链路运营官」。这是一条**交互式决策链路**：你带我从选题一路走到成稿与排版出图，每个关键决策点都要先把你的**思考过程显式写出来**（让我看到你为什么这么判断），再给我**几个带编号的选项**让我挑——我也可以**直接输入自己的想法**覆盖你的建议。除非我在开头说了「全自动」，否则每个决策点都停下来等我确认再继续。
-
-【今天的方向 / 留空让你定】__________
-
-**决策点 1 · 选题雷达**
-- 联网深度搜索该方向「最近」的新闻、动态、高赞讨论与对标账号爆文，提炼 3-5 个有传播潜力的「选题方向」，每个方向再给 1-2 个具体选题示例（如：方向「AI 巨头动态」→「OpenAI 首次盈利意味着什么」「某 GPT 公司要上市了」）。
-- 用编号列出，每个标一句「为什么这题有流量」。结尾问我：**挑哪个编号？或直接输入你想写的题。**
-
-**决策点 2 · 风格定调（风格可调）**
-- 先读本项目知识库（PolarisKB，沿双链用 Read/Glob/Grep 自取）与人格库，给我 **3 种可选风格**（如：毛选式雄辩体 / 冷静深度评论体 / 个人 IP 故事体），每种用一句话点出调性，并各写 2-3 句样例开头让我直观感受。
-- 结尾问我：**选哪种风格？或把你想要的风格描述/示例文字直接发我，我照你的来。**
-
-**决策点 3 · 成稿确认**
-- 就选定的题 + 风格，深挖事实（联网）+ KB 补料，写出「标题（5 备选 + 推荐）→ 开头钩子 → 框架 → 正文 1500-3000 字 → 结尾行动号召」，合适处标【配图建议】。
-- 自评多维打分并给「问题→改法」，问我：**直接定稿，还是按某方向再改一版？**
-
-**决策点 4 · 渲染出图**
-- 把终稿做成**自包含、可直接预览的排版 HTML**（公众号风格：标题样式 / 引用块 / 分割线，配色克制、移动端可读），说明这份 HTML 可被转成长图或 PDF 做分段截图。
-- 存进草稿箱（一份 .md 正文 + 一份 .html 排版稿），文件名带「公众号草稿」与日期。
-
-**收尾**：一句话列出生成了哪些草稿文件，提示「请在草稿箱预览，确认后自行发布或转邮箱」。
-> 全程不要真的对外发布，你没有也不需要发布权限。若我在开头说了「全自动」，则跳过每个决策点的等待，你自己做最优选择一路跑到收尾，但仍要把每步的选择与理由写出来。`;
-
-const xhsChainPrompt = `你是 Polaris 的「小红书全链路运营官」。这是一条**交互式决策链路**：你带我从选题一路走到文案与图卡，每个关键决策点都要先把你的**思考过程显式写出来**，再给我**几个带编号的选项**让我挑——我也可以**直接输入自己的想法**覆盖。除非我在开头说了「全自动」，否则每个决策点都停下来等我确认再继续。
-
-【今天的方向 / 留空让你定】__________
-
-**决策点 1 · 选题雷达**
-- 联网深度搜索该方向「最近」的热点、爆款选题与用户痛点，提炼 3-5 个「选题方向」，每个再给 1-2 个具体选题示例，并标一句「为什么这题能爆」。
-- 用编号列出。结尾问我：**挑哪个编号？或直接输入你想写的题。**
-
-**决策点 2 · 风格定调（风格可调）**
-- 读本项目知识库（PolarisKB，沿双链用 Read/Glob/Grep 自取）与人格库，给我 **3 种可选风格**（如：真诚分享体 / 反差种草体 / 干货清单体），每种一句话点调性 + 一条样例标题与开头，让我直观感受。
-- 结尾问我：**选哪种？或把你想要的风格 / 对标爆款直接发我。**
-
-**决策点 3 · 文案确认**
-- 就选定的题 + 风格，产出 5 个 20 字内备选标题（覆盖数字 / 痛点 / 反差 / 身份代入，含 1-2 个 emoji）并推荐一个；正文 300-600 字（前两行制造停留，主体分点 + emoji + 短句多换行，结尾引导互动）；末尾 8-12 个话题标签（大词 + 精准长尾 + 热点词）。
-- 爆款自检打分 + 「问题→改法」，问我：**直接定稿，还是再改一版？**
-
-**决策点 4 · 渲染图卡**
-- 把笔记做成**自包含、可直接预览的图卡 HTML**：1 张方形封面（大标题 + 钩子）+ N 张内页图卡（每张一个要点），配色统一、字少而大。说明这份 HTML 可被逐卡截图导出。
-- 存进草稿箱（.md 文案 + .html 图卡稿），文件名带「小红书草稿」与日期。
-
-**收尾**：一句话列出生成了哪些草稿文件 + 待发图卡，提示「请预览确认后自行发布（小红书无开放发布接口，需手动一贴）」。
-> 全程不要真的对外发布。若我在开头说了「全自动」，则跳过等待，你自己做最优选择一路跑到收尾，但每步选择与理由仍要写出来。`;
-
-// ── v4：微信聊天「每日待办」——本地解密微信，挖出「该回谁」，写进晨报卡片 ──
-// 与撰稿类流程不同：这条是**每日定时**跑、对接本机 wechat-tasks 技能的运维型流程。
-// 提示词只需驱动 agent 跑技能脚本（脚本自己解密→挖待办→写 kb_root/memory/briefing），
-// 待办随后以晨报卡片出现在对话框/自动化页顶部。首次需用户做一次性授权（见技能说明）。
-const wechatTasksPrompt = `你要执行「微信聊天 · 每日待办」自动化：本地解密我的微信、挖出**最近几天该回谁**、把待办写进我的晨报卡片。全程在本机完成，**不要联网、不要上传、不要对外发任何消息**。
-
-请按以下步骤做：
-1. 找到本机「微信每日待办」技能脚本目录：\`~/Polaris/skills/wechat-tasks/scripts/\`（Windows 即 \`C:\\Users\\<我>\\Polaris\\skills\\wechat-tasks\\scripts\\\`）。
-2. 先确认 \`wx_config.json\` 存在且填了 \`master_key\`：
-   - 若**不存在或 master_key 为空** → 说明还没做一次性授权。**不要**擅自重启微信，而是停下来提示我：「请先在技能里跑一次 \`python wx_setup.py\` 完成授权（会重启微信让我扫码登录），之后每天就能自动跑」，然后结束本次运行。
-   - 若已配置好 → 进入下一步。
-3. 运行 \`python ~/Polaris/skills/wechat-tasks/scripts/wx_daily.py\`（用系统 python 即可，脚本内部会调微信解密 venv）。它会：复用缓存密钥解密导出当前微信库 → 从「我回过话的私聊 + 我活跃的群里、最近 7 天别人发来我还没回」的消息挖出待办 → 写进 \`kb_root/memory/briefing/<今天>.json\`。
-4. 读一下脚本输出，用一句话向我汇报：命中几条微信待办、分别是回复谁。提醒我去**对话框/自动化页顶部的晨报卡片**查看，点「让我去做」我会帮你拟回复。
-   - 若脚本提示 master key 失效（我多半重新登录过微信）→ 转告我需要重新跑一次 \`wx_setup.py\` 授权。
-
-注意：这条流程产出的是「待办清单」，不是替我回消息——任何真正的回复都由我在晨报卡片里点确认后才发生。`;
-
-function seedFlowsV4(): AutomationFlow[] {
-  const now = Date.now();
-  return [
-    {
-      projectId: null,
-      execEnv: "local" as ExecEnv,
-      deepResearch: false,
-      skillIds: ["wechat-tasks"],
-      loopCount: 1,
-      builtin: true,
-      createdAt: now,
-      updatedAt: now,
-      id: uid(),
-      name: "微信聊天 · 每日待办（挖该回谁）",
-      icon: "message-circle",
-      color: FLOW_COLORS[3],
-      description:
-        "每天本地解密微信 → 挖「你回过话的私聊 + 活跃群里最近 7 天别人发来你还没回」的消息 → 写进晨报卡片，点一下帮你拟回复。需先做一次性授权。全本地不发布",
-      prompt: wechatTasksPrompt,
-      schedule: { kind: "daily", time: "09:00" },
-    },
-  ];
-}
-
-function seedFlowsV3(): AutomationFlow[] {
-  const now = Date.now();
-  const base = {
-    projectId: null,
-    execEnv: "local" as ExecEnv,
-    deepResearch: true,
-    loopCount: 1,
-    builtin: true,
-    createdAt: now,
-    updatedAt: now,
-  };
-  return [
-    {
-      ...base,
-      id: uid(),
-      name: "微信公众号 · 全链路运营（交互决策）",
-      icon: "newspaper",
-      color: FLOW_COLORS[2],
-      description:
-        "选题雷达给几个题让你挑/可自定义 → 风格可调(3 选或自定义) → 成稿确认 → 渲染排版 HTML → 存草稿箱；全程可见 AI 思考，支持全自动",
-      prompt: wechatChainPrompt,
-      schedule: { kind: "manual" },
-    },
-    {
-      ...base,
-      id: uid(),
-      name: "小红书 · 全链路运营（交互决策）",
-      icon: "book-marked",
-      color: FLOW_COLORS[1],
-      description:
-        "选题雷达给几个题让你挑/可自定义 → 风格可调 → 文案确认 → 渲染图卡 → 存待发包；全程可见 AI 思考，支持全自动",
-      prompt: xhsChainPrompt,
-      schedule: { kind: "manual" },
-    },
-  ];
-}
-
-function seedFlowsV2(): AutomationFlow[] {
-  const now = Date.now();
-  const base = {
-    projectId: null,
-    execEnv: "local" as ExecEnv,
-    deepResearch: true,
-    loopCount: 1,
-    builtin: true,
-    createdAt: now,
-    updatedAt: now,
-  };
-  return [
-    {
-      ...base,
-      id: uid(),
-      name: "网页演示视频 · 生成可录屏稿（草稿）",
-      icon: "clapperboard",
-      color: FLOW_COLORS[4],
-      description:
-        "贴文稿 → 产脚本与大纲 → 仿风格 → 做成 16:9 可点击翻页的自包含 HTML 演示 → 存草稿箱待你录屏",
-      prompt: videoPrompt,
-      schedule: { kind: "manual" },
-    },
-    {
-      ...base,
-      id: uid(),
-      name: "Harness 工程实践 · 调研补全知识库",
-      icon: "cpu",
-      color: FLOW_COLORS[0],
-      description:
-        "联网调研 Claude Code harness 实践(技能化/供应商切换/MiniMax/编排) → 对照知识库找缺口 → 写成手册条目补库",
-      prompt: harnessPrompt,
-      schedule: { kind: "manual" },
-    },
-  ];
-}
-
-function seedFlows(): AutomationFlow[] {
-  const now = Date.now();
-  const base = {
-    projectId: null,
-    execEnv: "local" as ExecEnv,
-    deepResearch: true,
-    loopCount: 1,
-    builtin: true,
-    createdAt: now,
-    updatedAt: now,
-  };
-  return [
-    {
-      ...base,
-      id: uid(),
-      name: "微信公众号 · 自动撰稿（草稿）",
-      icon: "newspaper",
-      color: FLOW_COLORS[2],
-      description:
-        "选方向 → 深度搜最近新闻 → 仿知识库风格成文 → 多维评审修订 → 存草稿箱（不发布）",
-      prompt: wechatPrompt,
-      schedule: { kind: "manual" },
-    },
-    {
-      ...base,
-      id: uid(),
-      name: "小红书 · 自动撰稿（草稿）",
-      icon: "book-marked",
-      color: FLOW_COLORS[1],
-      description:
-        "选方向 → 深度搜热点 → 仿风格写爆款笔记 → 爆款自检评审 → 存草稿箱（不发布）",
-      prompt: xhsPrompt,
-      schedule: { kind: "manual" },
-    },
-    {
-      ...base,
-      id: uid(),
-      name: "B站调研 · 补全知识库",
-      icon: "tv",
-      color: FLOW_COLORS[4],
-      description:
-        "深度搜 B 站同领域内容 → 对照知识库找缺口（可补/存疑/已覆盖）→ 补全知识库条目",
-      prompt: bilibiliPrompt,
-      schedule: { kind: "manual" },
-    },
-  ];
-}
-
 export const useAutomationStore = defineStore("automation", () => {
   const flows = ref<AutomationFlow[]>([]);
 
@@ -386,34 +97,18 @@ export const useAutomationStore = defineStore("automation", () => {
   const activeConvId = ref<string | null>(null);
 
   function load() {
+    // 内置流程已全部下线：自动化从空列表起步,流程一律由用户自己新建。
+    // PURGE 键做一次性清理:把历史版本种进 localStorage 的内置流一并抹掉(只跑一次,
+    // 此后用户自建的流程照常持久化)。
+    if (!localStorage.getItem(PURGE_KEY)) {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.setItem(PURGE_KEY, "1");
+    }
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) flows.value = JSON.parse(raw) as AutomationFlow[];
     } catch {
-      /* ignore，落种入分支 */
-    }
-    if (flows.value.length === 0 && !localStorage.getItem(SEED_KEY)) {
-      flows.value = seedFlows();
-      localStorage.setItem(SEED_KEY, "1");
-      persist();
-    }
-    // v2 增补「网页演示视频 / Harness 工程实践」两条：对老用户也补一次，删除后不回种
-    if (!localStorage.getItem(SEED_V2_KEY)) {
-      flows.value = [...seedFlowsV2(), ...flows.value];
-      localStorage.setItem(SEED_V2_KEY, "1");
-      persist();
-    }
-    // v3 增补「公众号 / 小红书 全链路运营（交互决策）」两条：放最前，对老用户也补一次，删除后不回种
-    if (!localStorage.getItem(SEED_V3_KEY)) {
-      flows.value = [...seedFlowsV3(), ...flows.value];
-      localStorage.setItem(SEED_V3_KEY, "1");
-      persist();
-    }
-    // v4 增补「微信聊天 · 每日待办」：放最前，对老用户也补一次，删除后不回种
-    if (!localStorage.getItem(SEED_V4_KEY)) {
-      flows.value = [...seedFlowsV4(), ...flows.value];
-      localStorage.setItem(SEED_V4_KEY, "1");
-      persist();
+      /* storage 坏了就当空列表 */
     }
   }
 

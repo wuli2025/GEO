@@ -9,7 +9,6 @@ import {
   Drama,
   MessageCircle,
   Stethoscope,
-  Server,
   Settings,
   PanelLeftClose,
   PanelLeftOpen,
@@ -20,17 +19,13 @@ import {
   Archive,
   Clapperboard,
   Megaphone,
+  Gauge,
   Users,
-  UsersRound,
-  ChevronRight,
   Sparkles,
-  Handshake,
 } from "@lucide/vue";
 import SearchGlass from "./icons/SearchGlass.vue";
 import { useAppStore } from "../stores/app";
 import { useChatStore } from "../stores/chat";
-import { useCollabStore } from "../features/collab/stores/collab";
-import type { CollabProject } from "../features/collab/api";
 import ProviderDock from "./ProviderDock.vue";
 import {
   persona as personaApi,
@@ -42,29 +37,24 @@ import { toast } from "../composables/useToast";
 
 const app = useAppStore();
 const chat = useChatStore();
-const collab = useCollabStore();
 
 type NavItem = { key: typeof app.view; label: string; icon: any };
 // 常驻主项（仿豆包：顶层精简）。统一用 lucide 线性图标，去掉杂乱的 Unicode 字符，求一致的高级线条感。
 const primaryNav: NavItem[] = [
   { key: "chat", label: "对话", icon: MessagesSquare },
-  // 「知识库」已整体并入「文件中心 · 核心层」tab（体验一致），故不再单列侧栏项;
-  // wiki 视图与路由仍保留(文件中心「打开完整知识库」仍可跳),只是从侧栏隐藏。
-  // 文件中心:把整台电脑当成数据库 —— 可视化文件库 + 智能归类 + 语义检索 + 核心层(知识库本体)
-  { key: "file_center", label: "文件中心", icon: Database },
-  // 图谱已并入「知识库」顶部 tab(当一个小功能键),不再单列侧栏项
+  // 知识库(WikiBrowse):浏览/名人资料包/管理 + 顶部「图谱」键切星河图谱。
+  // 「文件中心」入口已下线(FileCenter 组件与 file_center 路由保留,未来要加回恢复此项即可)。
+  { key: "wiki", label: "知识库", icon: Database },
   { key: "automation", label: "自动化", icon: Clock },
   // 沙箱入口已隐藏：进入沙箱视图首挂载较重、点击有卡顿，且当前非核心路径。
   // 视图与路由（App.vue / SandboxStatus）保留，未来需要时把这一项加回即可。
-  { key: "skill_center", label: "技能中心", icon: Puzzle },
-  // 「专家团」中心（原「人格」升级）：点开看全部专家 + 业务团 + 按知识库智能推荐
-  { key: "claude_md", label: "专家团", icon: Users },
-  // 多人协作:任务卡看板 + 领取/提交/验收闭环(团队共用协作主机)
-  { key: "collab", label: "协作", icon: Handshake },
 ];
-// 收纳进「更多」的次要项（更新 / 飞书 / 环境 / MCP / 设置）
+// 收纳进「更多」的次要项（技能中心 / 专家团 / 更新 / 飞书 / 环境 / 设置）
 const moreNav: NavItem[] = [
-  { key: "media_ops", label: "自媒体运营", icon: Megaphone },
+  { key: "skill_center", label: "技能中心", icon: Puzzle },
+  { key: "claude_md", label: "专家团", icon: Users },
+  { key: "media_dashboard", label: "数据看板", icon: Gauge },
+  { key: "media_ops", label: "运营中心", icon: Megaphone },
   // 「PPT 演示」「网站生成」入口已隐藏：改由对话直接触发（说「做个 PPT / 做个网站」
   // 即自动激活 polaris-deck-studio / polaris-web-studio 技能，见 skills.rs
   // auto_skills_for_intent）。视图与路由（App.vue deck / web_studio）保留，
@@ -73,7 +63,6 @@ const moreNav: NavItem[] = [
   { key: "update", label: "更新", icon: CloudDownload },
   { key: "feishu", label: "聊天机器人", icon: MessageCircle },
   { key: "env_doctor", label: "环境", icon: Stethoscope },
-  { key: "mcp", label: "MCP", icon: Server },
   { key: "settings", label: "设置", icon: Settings },
 ];
 const showMore = ref(false);
@@ -87,23 +76,7 @@ const showNewProject = ref(false);
 
 onMounted(() => {
   app.refreshProjects();
-  // 团队项目分区数据(幂等:validated 闸在 store 内;未登录静默无感)
-  void collab.init();
 });
-
-// ─────────── 团队项目分区(GitHub repo 列表式) ───────────
-const teamProjects = computed<CollabProject[]>(() =>
-  collab.authed ? collab.projects.filter((p) => !p.archived) : []
-);
-const expandedTeam = ref<Record<number, boolean>>({});
-function openTeamProject(p: CollabProject) {
-  void collab.selectProject(p.id);
-  app.setView("collab_project");
-}
-/** 团队项目绑定的本地项目(对话工作区);未绑定返回 undefined */
-function boundOf(p: CollabProject) {
-  return app.projectByCollabId(p.id);
-}
 
 async function submitNewProject() {
   const n = newProjectName.value.trim();
@@ -280,15 +253,7 @@ const sortedProjects = computed(() => {
     }
     return r;
   };
-  // 已绑定到「团队项目」且该团队项目当前可见的本地项目,不在「我的项目」重复显示
-  // (对话由团队分区展开直达);未登录/团队项目不可见时回落到这里,对话不失联。
-  const visible = app.projects.filter(
-    (p) =>
-      p.collabProjectId == null ||
-      !collab.authed ||
-      !collab.projects.some((cp) => cp.id === p.collabProjectId)
-  );
-  return [...visible].sort(
+  return [...app.projects].sort(
     (a, b) => recency(b.id, b.createdAt) - recency(a.id, a.createdAt)
   );
 });
@@ -334,7 +299,7 @@ const sortedProjects = computed(() => {
         <span v-if="!app.sidebarCollapsed" class="label">{{ it.label }}</span>
       </button>
 
-      <!-- 更多：把 目录说明 / 环境 / MCP / 设置 收纳进来（仿豆包，顶层更清爽） -->
+      <!-- 更多：技能中心 / 专家团 / 环境 / 设置 等次要项收纳于此（顶层更清爽） -->
       <button
         class="nav-item"
         :class="{ active: moreActive && !showMore, expanded: showMore }"
@@ -401,54 +366,6 @@ const sortedProjects = computed(() => {
         />
         <button class="primary-mini" @click="submitNewProject">建</button>
       </div>
-
-      <!-- 团队项目分区(GitHub repo 列表式:徽章计数,点名字进项目主页,展开看讨论) -->
-      <template v-if="teamProjects.length">
-        <div class="team-sec-head">团队项目</div>
-        <div v-for="tp in teamProjects" :key="'tp' + tp.id" class="proj-block">
-          <div
-            class="proj team"
-            :class="{ active: app.view === 'collab_project' && collab.currentProjectId === tp.id }"
-            @click="openTeamProject(tp)"
-          >
-            <button
-              class="tp-caret"
-              :class="{ open: expandedTeam[tp.id] }"
-              title="展开讨论"
-              @click.stop="expandedTeam[tp.id] = !expandedTeam[tp.id]"
-            >
-              <ChevronRight :size="12" :stroke-width="2" />
-            </button>
-            <UsersRound class="folder" :size="15" :stroke-width="1.7" />
-            <span class="name">{{ tp.name }}</span>
-            <span
-              v-if="(tp.open_count ?? 0) + (tp.review_count ?? 0) > 0"
-              class="tp-badge"
-              :title="`进行中 ${tp.open_count ?? 0} · 待验收 ${tp.review_count ?? 0}`"
-            >
-              {{ (tp.open_count ?? 0) + (tp.review_count ?? 0) }}
-            </span>
-          </div>
-          <template v-if="expandedTeam[tp.id]">
-            <template v-if="boundOf(tp)">
-              <div
-                v-for="c in sortedConvs(boundOf(tp)!.id)"
-                :key="c.id"
-                class="conv"
-                :class="{ active: app.currentConvId === c.id, pinned: app.isPinned(c.id) }"
-                @click="app.selectConversation(c)"
-              >
-                <span class="cv-name" :title="c.title">{{ c.title || "未命名对话" }}</span>
-              </div>
-              <div v-if="!sortedConvs(boundOf(tp)!.id).length" class="tp-empty">
-                还没有讨论 · 点项目名进主页开一个
-              </div>
-            </template>
-            <div v-else class="tp-empty">点项目名进主页,「开新讨论」即自动关联</div>
-          </template>
-        </div>
-        <div class="team-sec-head">我的项目</div>
-      </template>
 
       <div v-for="proj in sortedProjects" :key="proj.id" class="proj-block">
         <div

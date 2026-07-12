@@ -142,3 +142,37 @@ fn write_wechat_typesetter_files(dest: &Path) -> Result<(), String> {
     fs::write(scripts.join("wechat_yiban.py"), WECHAT_TS_YIBAN_PY).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// 启动时确保「多平台草稿投递官」技能在 ~/PolarisGEO/skills 落盘
+/// （多文件：skill.md + scripts/draft_uploader.py + scripts/ark_image.py）。
+///
+/// 与 seed_wechat_typesetter_skill 同机制：目录缺失 / 版本旧（`.polaris_version` <
+/// `MEDIA_PUB_VERSION`）就（重）写；已是最新则跳过。脚本必须真落到磁盘，spawn 的
+/// claude agent 才能 `python …/draft_uploader.py` 跑它。best-effort：失败只让
+/// 「草稿投递」暂不可用，不阻断 App 启动。
+pub fn seed_media_publisher_skill() {
+    let Some(root) = skills_dir() else {
+        return;
+    };
+    let dest = root.join(MEDIA_PUB_ID);
+    let ver_file = dest.join(".polaris_version");
+    let stored = fs::read_to_string(&ver_file).unwrap_or_default();
+    let present = dest.join("skill.md").exists();
+    if present && stored.trim() == MEDIA_PUB_VERSION {
+        return;
+    }
+    if write_media_publisher_files(&dest).is_ok() {
+        let _ = fs::write(&ver_file, MEDIA_PUB_VERSION);
+    }
+}
+
+/// 把内嵌的「多平台草稿投递官」文件写到目标目录（skill.md 小写，与扫描约定一致）。
+fn write_media_publisher_files(dest: &Path) -> Result<(), String> {
+    let scripts = dest.join("scripts");
+    fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
+    fs::write(dest.join("skill.md"), MEDIA_PUB_SKILL_MD).map_err(|e| e.to_string())?;
+    fs::write(scripts.join("draft_uploader.py"), MEDIA_PUB_UPLOADER_PY)
+        .map_err(|e| e.to_string())?;
+    fs::write(scripts.join("ark_image.py"), MEDIA_PUB_ARK_PY).map_err(|e| e.to_string())?;
+    Ok(())
+}

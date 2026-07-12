@@ -97,3 +97,92 @@ fn current_date() -> String {
 
 /// GENERIC.md 通用骨架（编译期内嵌）—— 仅当某专家还没有专属 .md 时回落使用。
 const GENERIC_TEMPLATE: &str = include_str!("../templates/experts/GENERIC.md");
+
+// ───────────────────────── 自媒体：平台提示词补丁 ─────────────────────────
+//
+// 同一位自媒体专家的「基础画像」是平台无关的（templates/experts/media/{id}.md）；
+// 各平台的文风宪法 / 标题公式 / 排版规范 / 红线以「补丁」形式叠加：
+//   1. 运行时目录  ~/PolarisGEO/data/expert-overlays/{platform}/{expert_id}.md  （用户可编辑，最高优先）
+//   2. 内嵌种子    templates/experts/media/overlays/{platform}--{expert_id}.md   （随包发布的默认补丁）
+//   3. 都没有      只用基础画像
+
+/// 只允许小写字母/数字/连字符，杜绝路径穿越（platform、expert_id 都过这道闸）。
+fn sanitize_seg(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.is_empty() || s.len() > 64 {
+        return None;
+    }
+    if s.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
+/// 运行时补丁根目录：~/PolarisGEO/data/expert-overlays。
+fn overlay_runtime_root() -> Option<std::path::PathBuf> {
+    directories::UserDirs::new().map(|u| {
+        u.home_dir()
+            .join("PolarisGEO")
+            .join("data")
+            .join("expert-overlays")
+    })
+}
+
+/// 运行时补丁文件路径（不保证存在）。
+fn overlay_runtime_path(platform: &str, expert_id: &str) -> Option<std::path::PathBuf> {
+    let p = sanitize_seg(platform)?;
+    let id = sanitize_seg(expert_id)?;
+    Some(overlay_runtime_root()?.join(p).join(format!("{id}.md")))
+}
+
+/// 解析某平台某专家的补丁内容 + 来源。
+/// 返回 (source, content)：source ∈ "runtime" | "seed" | "none"；none 时 content 为空串。
+pub fn media_overlay_resolve(platform: &str, expert_id: &str) -> (String, String) {
+    // 1) 运行时目录优先
+    if let Some(path) = overlay_runtime_path(platform, expert_id) {
+        if let Ok(txt) = std::fs::read_to_string(&path) {
+            if !txt.trim().is_empty() {
+                return ("runtime".to_string(), txt);
+            }
+        }
+    }
+    // 2) 内嵌种子 overlays/{platform}--{expert_id}.md
+    if let (Some(p), Some(id)) = (sanitize_seg(platform), sanitize_seg(expert_id)) {
+        let rel = format!("media/overlays/{p}--{id}.md");
+        if let Some(txt) = EXPERTS_DIR
+            .get_file(&rel)
+            .and_then(|f| f.contents_utf8())
+            .filter(|s| !s.trim().is_empty())
+        {
+            return ("seed".to_string(), txt.to_string());
+        }
+    }
+    // 3) 无补丁
+    ("none".to_string(), String::new())
+}
+
+/// 写入/删除运行时补丁。content 为空串 = 删除运行时补丁（回落种子/基础画像）。
+/// 采用「临时文件 + rename」原子写，避免半截文件。
+pub fn media_overlay_write(platform: &str, expert_id: &str, content: &str) -> Result<(), String> {
+    let path = overlay_runtime_path(platform, expert_id)
+        .ok_or_else(|| "非法的 platform / expert_id".to_string())?;
+
+    // 空内容 = 删除运行时补丁（存在才删）
+    if content.trim().is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("md.tmp");
+    std::fs::write(&tmp, content).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}

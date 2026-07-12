@@ -130,6 +130,20 @@ pub(crate) const WECHAT_TS_SKILL_MD: &str =
 pub(crate) const WECHAT_TS_YIBAN_PY: &str =
     include_str!("../../../../src/templates/skills/wechat-md-typesetter/scripts/wechat_yiban.py");
 
+// ───────── 「多平台草稿投递官」多文件技能（自媒体投递，编译期内嵌，启动落盘）─────────
+// SKILL.md（投递说明书）+ scripts/draft_uploader.py（7 平台草稿投递引擎，CloakBrowser 粘贴通道）
+// + scripts/ark_image.py（火山方舟 Seedream 生图 CLI）。与 wechat-md-typesetter 同机制：
+// 编译期内嵌、启动确保落到 ~/PolarisGEO/skills，spawn 的 claude agent 直接 `python …` 跑脚本。
+pub(crate) const MEDIA_PUB_ID: &str = "media-publisher";
+// 改动 SKILL.md 或任一 py 后必须 +1，让已安装用户下次启动拿到更新。
+pub(crate) const MEDIA_PUB_VERSION: &str = "1";
+pub(crate) const MEDIA_PUB_SKILL_MD: &str =
+    include_str!("../../../../src/templates/skills/media-publisher/SKILL.md");
+pub(crate) const MEDIA_PUB_UPLOADER_PY: &str =
+    include_str!("../../../../src/templates/skills/media-publisher/scripts/draft_uploader.py");
+pub(crate) const MEDIA_PUB_ARK_PY: &str =
+    include_str!("../../../../src/templates/skills/media-publisher/scripts/ark_image.py");
+
 // ───────── 「项目检测」默认检查技能 id（技能本体已裁撤，仅保留 id 供 polaris-collab 检查闸引用）─────────
 // polaris-collab 的检查闸(collab/checks.rs / http.rs)以此为默认 check_skill id。技能模板与
 // seed 已随本次裁剪移除，运行期若未安装同名检查技能，检查闸会回退到「技能缺失=fail」。

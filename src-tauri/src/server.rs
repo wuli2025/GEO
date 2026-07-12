@@ -93,6 +93,7 @@ pub async fn serve() -> anyhow::Result<()> {
     }
     crate::skills::seed_web_studio_skill();
     crate::skills::seed_wechat_typesetter_skill();
+    crate::skills::seed_media_publisher_skill();
     // 注：「请教毛主席」默认隐藏 —— 仅在用户主动安装「毛主席」资料包时装 consult-mao 技能，
     // 启动时不再自动补装（盘上已有数据保留，不删）。
     // 飞书网关「开机自动启动」（若用户开了 auto_start 且凭证齐全）。
