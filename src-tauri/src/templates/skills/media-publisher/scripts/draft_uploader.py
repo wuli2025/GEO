@@ -43,24 +43,60 @@ import sys
 import tempfile
 import time
 
-# ───────────────────────── CloakBrowser 优先，playwright 回退 ─────────────────────────
+# ─────────── 本地真实 Chrome 优先（channel=chrome），CloakBrowser 仅作回退 ───────────
+# 用户要求：优先本地浏览器。本地 Chrome 渲染正常（模拟浏览器 CloakBrowser 会把某些平台
+# 编辑器布局渲染歪、发布键点不准）；只有本地 Chrome 起不来才回退 CloakBrowser。
+# 可用环境变量 POLARIS_BROWSER=cloak 强制用 CloakBrowser。
 try:
-    from cloakbrowser import launch_persistent_context  # type: ignore
-    BROWSER_ENGINE = "cloakbrowser"
+    from playwright.sync_api import sync_playwright as _sync_pw  # type: ignore
 except Exception:
-    try:
-        from playwright.sync_api import sync_playwright  # type: ignore
-    except Exception:
-        sync_playwright = None
-    BROWSER_ENGINE = "playwright"
+    _sync_pw = None
+try:
+    from cloakbrowser import launch_persistent_context as _cloak_launch  # type: ignore
+except Exception:
+    _cloak_launch = None
 
-    def launch_persistent_context(user_data_dir=".", headless=False, humanize=False, **_):
-        if sync_playwright is None:
-            raise RuntimeError("cloakbrowser 与 playwright 都不可用，请先 pip install cloakbrowser")
-        pw = sync_playwright().start()
+BROWSER_ENGINE = "local-chrome"
+
+
+def _launch_local_chrome(user_data_dir, headless):
+    """playwright 驱动本地安装的 Google Chrome（channel=chrome），大视口保证布局正常。"""
+    pw = _sync_pw().start()
+    ctx = pw.chromium.launch_persistent_context(
+        user_data_dir, headless=headless, channel="chrome",
+        viewport={"width": 1600, "height": 1000},
+        args=["--no-first-run", "--no-default-browser-check"])
+    ctx._pw = pw
+    return ctx
+
+
+def launch_persistent_context(user_data_dir=".", headless=False, humanize=False, **_):
+    global BROWSER_ENGINE
+    force = os.environ.get("POLARIS_BROWSER", "").lower()
+    # 强制 CloakBrowser
+    if force in ("cloak", "cloakbrowser") and _cloak_launch is not None:
+        BROWSER_ENGINE = "cloakbrowser"
+        return _cloak_launch(user_data_dir=user_data_dir, headless=headless, humanize=humanize)
+    # 默认：本地 Chrome 优先
+    if _sync_pw is not None:
+        try:
+            ctx = _launch_local_chrome(user_data_dir, headless)
+            BROWSER_ENGINE = "local-chrome"
+            return ctx
+        except Exception as e:
+            print("[投递] 本地 Chrome 启动失败(%s)，回退 CloakBrowser。" % str(e)[:60], flush=True)
+    # 回退 CloakBrowser（本地卡住/未装 Chrome 时）
+    if _cloak_launch is not None:
+        BROWSER_ENGINE = "cloakbrowser"
+        return _cloak_launch(user_data_dir=user_data_dir, headless=headless, humanize=humanize)
+    # 最后回退：playwright 自带 chromium
+    if _sync_pw is not None:
+        pw = _sync_pw().start()
         ctx = pw.chromium.launch_persistent_context(user_data_dir, headless=headless)
         ctx._pw = pw
+        BROWSER_ENGINE = "playwright-chromium"
         return ctx
+    raise RuntimeError("本地 Chrome / CloakBrowser / playwright 都不可用，请先安装 Google Chrome 或 pip install playwright cloakbrowser")
 
 
 # ───────────────────────── 平台适配器（后台改版只改这里）─────────────────────────

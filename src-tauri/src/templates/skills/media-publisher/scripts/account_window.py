@@ -35,28 +35,45 @@ def log(step, **kw):
         print(str(kw), flush=True)
 
 
-# ─────────────── CloakBrowser 优先，回退原生 playwright（本地调试） ───────────────
+# ────── 本地真实 Chrome 优先（channel=chrome），CloakBrowser 仅作回退 ──────
+# 用户要求优先本地浏览器：本地 Chrome 渲染正常、登录态与后续投递复用同一 profile。
+# 仅本地 Chrome 起不来才回退 CloakBrowser。POLARIS_BROWSER=cloak 可强制 CloakBrowser。
 try:
-    from cloakbrowser import launch_persistent_context  # type: ignore
-    _BACKEND = "cloakbrowser"
-except Exception:  # pragma: no cover
-    _BACKEND = "playwright"
-    try:
-        from playwright.sync_api import sync_playwright  # type: ignore
-    except Exception:
-        sync_playwright = None
+    from playwright.sync_api import sync_playwright as _sync_pw  # type: ignore
+except Exception:
+    _sync_pw = None
+try:
+    from cloakbrowser import launch_persistent_context as _cloak_ctx  # type: ignore
+except Exception:
+    _cloak_ctx = None
+_BACKEND = "local-chrome"
 
-    def launch_persistent_context(user_data_dir=".", headless=False, viewport=None, **_):
-        if sync_playwright is None:
-            raise RuntimeError("既没有 cloakbrowser 也没有 playwright，请先安装其一")
-        pw = sync_playwright().start()
-        ctx = pw.chromium.launch_persistent_context(
-            user_data_dir,
-            headless=headless,
-            viewport=viewport or {"width": 1280, "height": 860},
-        )
-        ctx._pw = pw  # 关闭时一并 stop
+
+def launch_persistent_context(user_data_dir=".", headless=False, viewport=None, **_):
+    global _BACKEND
+    vp = viewport or {"width": 1440, "height": 900}
+    force_cloak = os.environ.get("POLARIS_BROWSER", "").lower() in ("cloak", "cloakbrowser")
+    if not force_cloak and _sync_pw is not None:
+        try:
+            pw = _sync_pw().start()
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir, headless=headless, channel="chrome", viewport=vp,
+                args=["--no-first-run", "--no-default-browser-check"])
+            ctx._pw = pw
+            _BACKEND = "local-chrome"
+            return ctx
+        except Exception:
+            pass
+    if _cloak_ctx is not None:
+        _BACKEND = "cloakbrowser"
+        return _cloak_ctx(user_data_dir=user_data_dir, headless=headless, viewport=vp)
+    if _sync_pw is not None:
+        pw = _sync_pw().start()
+        ctx = pw.chromium.launch_persistent_context(user_data_dir, headless=headless, viewport=vp)
+        ctx._pw = pw
+        _BACKEND = "playwright-chromium"
         return ctx
+    raise RuntimeError("本地 Chrome / CloakBrowser / playwright 都不可用，请先安装 Google Chrome")
 
 
 HOME = os.path.expanduser("~")

@@ -57,26 +57,58 @@ import sys
 import time
 
 # ───────────────────────── CloakBrowser（默认浏览器，drop-in 替换 Playwright）─────────────────────────
-# 离线源码副本已随 Polaris 附带：pip install ~/Polaris/plugins/cloakbrowser
+# ── 本地真实 Chrome 优先（channel=chrome），CloakBrowser 仅作回退 ──
+# 用户要求优先本地浏览器：本地 Chrome 渲染正常（CloakBrowser 模拟浏览器会把公众号等编辑器
+# 布局渲染歪、发布/封面键点不准）。仅本地 Chrome 起不来才回退 CloakBrowser。
+# POLARIS_BROWSER=cloak 可强制用 CloakBrowser。
 try:
-    from cloakbrowser import launch, launch_persistent_context  # type: ignore
-except Exception:  # pragma: no cover —— 没装就退回原生 playwright，便于本地调试
-    try:
-        from playwright.sync_api import sync_playwright  # type: ignore
-    except Exception:
-        sync_playwright = None
+    from playwright.sync_api import sync_playwright as _sync_pw  # type: ignore
+except Exception:
+    _sync_pw = None
+try:
+    from cloakbrowser import launch as _cloak_launch, launch_persistent_context as _cloak_ctx  # type: ignore
+except Exception:
+    _cloak_launch = None
+    _cloak_ctx = None
 
-    def launch(headless=True, humanize=False, **_):
-        pw = sync_playwright().start()
-        b = pw.chromium.launch(headless=headless)
-        b._pw = pw  # 关闭时一并 stop
-        return b
 
-    def launch_persistent_context(user_data_dir=".", headless=True, humanize=False, **_):
-        pw = sync_playwright().start()
-        ctx = pw.chromium.launch_persistent_context(user_data_dir, headless=headless)
-        ctx._pw = pw
-        return ctx
+def _use_cloak():
+    return os.environ.get("POLARIS_BROWSER", "").lower() in ("cloak", "cloakbrowser")
+
+
+def launch(headless=True, humanize=False, **_):
+    if not _use_cloak() and _sync_pw is not None:
+        try:
+            pw = _sync_pw().start()
+            b = pw.chromium.launch(headless=headless, channel="chrome",
+                                   args=["--no-first-run", "--no-default-browser-check"])
+            b._pw = pw
+            return b
+        except Exception:
+            pass
+    if _cloak_launch is not None:
+        return _cloak_launch(headless=headless, humanize=humanize)
+    pw = _sync_pw().start(); b = pw.chromium.launch(headless=headless); b._pw = pw; return b
+
+
+def launch_persistent_context(user_data_dir=".", headless=True, humanize=False, **_):
+    if not _use_cloak() and _sync_pw is not None:
+        try:
+            pw = _sync_pw().start()
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir, headless=headless, channel="chrome",
+                viewport={"width": 1600, "height": 1000},
+                args=["--no-first-run", "--no-default-browser-check"])
+            ctx._pw = pw
+            return ctx
+        except Exception:
+            pass
+    if _cloak_ctx is not None:
+        return _cloak_ctx(user_data_dir=user_data_dir, headless=headless, humanize=humanize)
+    pw = _sync_pw().start()
+    ctx = pw.chromium.launch_persistent_context(user_data_dir, headless=headless)
+    ctx._pw = pw
+    return ctx
 
 
 # ───────────────────────── 后台 DOM 选择器（改版只动这里）─────────────────────────
