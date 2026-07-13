@@ -1005,63 +1005,111 @@ def run_render(body_html, theme, out_path):
 
 
 # ───────────────────────── 模式二：publish（两段：先稳传文字，再套样式）─────────────────────────
+def _cover_click_text(page, texts, exact=False):
+    """遍历所有 frame 元素句柄匹配文本，用 playwright 句柄 .click()（真实指针点击）。
+    公众号封面菜单/图片库 tab 只认真实指针事件，JS .click() 无效。"""
+    for fr in page.frames:
+        try: handles = fr.query_selector_all("a,li,button,div,span,td,p")
+        except Exception: continue
+        for h in handles:
+            try:
+                if not h.is_visible(): continue
+                t = (h.inner_text() or "").strip()
+            except Exception: continue
+            hit = (t in texts) if exact else any(x in t for x in texts)
+            if hit and 0 < len(t) < 14:
+                try: h.scroll_into_view_if_needed(timeout=1500)
+                except Exception: pass
+                try: h.click(timeout=2500); return t
+                except Exception:
+                    try:
+                        box = h.bounding_box()
+                        if box: page.mouse.click(box["x"]+box["width"]/2, box["y"]+box["height"]/2); return t
+                    except Exception: pass
+    return None
+
+
+def _cover_text_present(page, txt):
+    for fr in page.frames:
+        try:
+            if fr.get_by_text(txt).first.count() > 0: return True
+        except Exception: pass
+    return False
+
+
+def _cover_dismiss_block(page):
+    """关掉「未授权切换账号」等拦截弹窗（它会挡住封面素材选择器）。"""
+    for t in ["我知道了", "知道了"]:
+        try:
+            for b in page.query_selector_all("button,a"):
+                if b.is_visible() and (b.inner_text() or "").strip() == t:
+                    b.click(); time.sleep(0.6); return
+        except Exception: pass
+
+
 def _upload_cover(page, cover_path):
-    """给公众号草稿设封面（借鉴 vigorX777/wechat-article-formatter 的 CDP 配方）：
-    点封面区 → 点「上传图片/本地上传」tab → 直接 set_input_files 隐藏 file input（不点、不等
-    文件选择器，playwright 底层即 DOM.setFileInputFiles）→ 点裁剪确认。返回是否成功。"""
+    """给公众号草稿设封面 —— 2026-07 真机验证通过的完整流程：
+    关拦截弹窗 → 真实点击封面区「+拖拽或选择封面」(需验证菜单开、重试) → 点「从图片库选择」→
+    图片库弹窗点「上传文件」经文件选择器塞图 → 选中最新缩略图（否则「下一步」禁用）→
+    点「下一步」→ 裁剪弹窗点「确定/完成」。全程真实指针点击（JS .click 对公众号无效）。
+    关键前置：登录需勾选「允许切换账号」，否则拦截弹窗挡住素材库。返回是否成功。"""
     if not cover_path or not os.path.isfile(cover_path):
         return False
     try:
-        # 先滚到底让封面区进视野（封面&摘要在编辑器底部）
-        try: page.evaluate("()=>window.scrollTo(0, document.body.scrollHeight)"); time.sleep(1.0)
-        except Exception: pass
-        # 新版公众号封面是「拖拽或选择封面」区，它有一个常驻隐藏 input[type=file][accept=image/*]。
-        # 直接 set_input_files（=把图拖进封面区）最稳，不用点开弹窗/选 tab。选带 image accept 的那个，
-        # 且排除只接受视频的，避免喂错。
-        fi = None
-        for cand in page.query_selector_all("input[type=file]"):
-            acc = (cand.get_attribute("accept") or "").lower()
-            if "image" in acc and "video" not in acc:
-                fi = cand; break
-        if fi is None:
-            # 常驻 input 没找到→退回点封面区打开弹窗再找
-            for sel in [".select-cover_multi_drop", "[class*='select-cover']"]:
-                el = page.query_selector(sel)
-                if el and el.is_visible():
-                    try: el.scroll_into_view_if_needed(); el.click(); time.sleep(2.5); break
-                    except Exception: pass
-            for cand in page.query_selector_all("input[type=file]"):
-                acc = (cand.get_attribute("accept") or "").lower()
-                if "image" in acc and "video" not in acc:
-                    fi = cand; break
-        if fi is None:
-            print("[壹伴] 封面：没找到图片 file input，跳过（可手动设）。", flush=True)
-            return False
-        fi.set_input_files(cover_path); time.sleep(4.0)
-        # ④ 素材弹窗→裁剪→确认可能多步（下一步/使用→裁剪 确定/完成）。连点确认类主按钮至多 4 轮，
-        #    每轮点一个可见的主按钮或文本匹配按钮，直到没有可点的确认按钮。
-        clicked_any = False
+        page.evaluate("()=>window.scrollTo(0, document.body.scrollHeight)"); time.sleep(2.0)
+        _cover_dismiss_block(page)
+        # ① 真实点击封面区（验证菜单开，最多重试 4 次）
+        menu_open = False
         for _ in range(4):
-            hit = False
-            for sel in [".weui-desktop-dialog .weui-desktop-btn_primary", ".js_crop_confirm",
-                        ".weui-desktop-dialog .btn_primary", ".image-cropper .weui-desktop-btn_primary",
-                        ".weui-desktop-btn_primary"]:
-                el = page.query_selector(sel)
-                if el and el.is_visible():
-                    try:
-                        time.sleep(1.0); el.click(); time.sleep(2.0); hit = True; clicked_any = True; break
-                    except Exception:
-                        pass
-            if not hit:
-                got = page.evaluate(
-                    r"""()=>{const texts=['下一步','使用','完成','确定','确认','保存'];
-                    const b=document.querySelectorAll('.weui-desktop-dialog button,.weui-desktop-dialog .weui-desktop-btn,'
-                      +'.weui-desktop-dialog a');
-                    for(const btn of b){const t=(btn.textContent||'').trim();
-                      if(texts.some(x=>x===t)){try{btn.click();return true;}catch(e){}}}return false;}""")
-                if got: clicked_any = True; time.sleep(2.0)
-                else: break
-        return bool(clicked_any)
+            el = page.query_selector(".select-cover_multi_drop") or page.query_selector("[class*=select-cover]")
+            if el:
+                try:
+                    el.scroll_into_view_if_needed(); box = el.bounding_box()
+                    if box: page.mouse.click(box["x"]+box["width"]/2, box["y"]+box["height"]/2)
+                except Exception: pass
+            time.sleep(2.0); _cover_dismiss_block(page)
+            if _cover_text_present(page, "从图片库选择"): menu_open = True; break
+        if not menu_open:
+            print("[壹伴] 封面：封面菜单没打开（可能缺「允许切换账号」权限被拦截弹窗挡住），跳过。", flush=True)
+            return False
+        # ② 从图片库选择 → 图片库弹窗
+        _cover_click_text(page, ["从图片库选择"]); time.sleep(3.5)
+        # ③ 上传文件（本地上传按钮叫「上传文件」）：文件选择器塞图，失败退回直接 set 隐藏 input
+        try:
+            with page.expect_file_chooser(timeout=5000) as fcinfo:
+                _cover_click_text(page, ["上传文件"], exact=True)
+            fcinfo.value.set_files(cover_path)
+        except Exception:
+            for fr in page.frames:
+                try:
+                    for c in fr.query_selector_all("input[type=file]"):
+                        acc = (c.get_attribute("accept") or "").lower()
+                        if "image" in acc and "video" not in acc: c.set_input_files(cover_path); break
+                except Exception: pass
+        time.sleep(6.0)
+        # ④ 选中最新缩略图（「下一步」禁用是因为没选图）
+        picked = False
+        for fr in page.frames:
+            for sel in [".weui-desktop-img-picker__img-item", "[class*=img-picker] [class*=item]", "[class*=img-item]"]:
+                try:
+                    el = fr.query_selector(sel)
+                    if el and el.is_visible(): el.click(); picked = True; break
+                except Exception: pass
+            if picked: break
+        if not picked:
+            for fr in page.frames:
+                imgs = [i for i in fr.query_selector_all("img") if i.is_visible() and (i.bounding_box() or {}).get("width", 0) > 60]
+                if imgs:
+                    try: imgs[0].click(); picked = True; break
+                    except Exception: pass
+        time.sleep(1.5)
+        # ⑤ 下一步 → 裁剪确认
+        _cover_click_text(page, ["下一步"], exact=True); time.sleep(3.0)
+        for _ in range(3):
+            c = _cover_click_text(page, ["完成", "确定", "确认", "保存"], exact=True)
+            if not c: break
+            time.sleep(2.5); _cover_dismiss_block(page)
+        return True
     except Exception as e:
         print("[壹伴] 封面上传出错（%s）——正文草稿不受影响，可手动设封面。" % e, flush=True)
         try: page.keyboard.press("Escape")
