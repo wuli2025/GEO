@@ -1005,7 +1005,71 @@ def run_render(body_html, theme, out_path):
 
 
 # ───────────────────────── 模式二：publish（两段：先稳传文字，再套样式）─────────────────────────
-def run_publish(body_html, theme, title, save_fallback, text_only, timeout):
+def _upload_cover(page, cover_path):
+    """给公众号草稿设封面（借鉴 vigorX777/wechat-article-formatter 的 CDP 配方）：
+    点封面区 → 点「上传图片/本地上传」tab → 直接 set_input_files 隐藏 file input（不点、不等
+    文件选择器，playwright 底层即 DOM.setFileInputFiles）→ 点裁剪确认。返回是否成功。"""
+    if not cover_path or not os.path.isfile(cover_path):
+        return False
+    try:
+        # 先滚到底让封面区进视野（封面&摘要在编辑器底部）
+        try: page.evaluate("()=>window.scrollTo(0, document.body.scrollHeight)"); time.sleep(1.0)
+        except Exception: pass
+        # 新版公众号封面是「拖拽或选择封面」区，它有一个常驻隐藏 input[type=file][accept=image/*]。
+        # 直接 set_input_files（=把图拖进封面区）最稳，不用点开弹窗/选 tab。选带 image accept 的那个，
+        # 且排除只接受视频的，避免喂错。
+        fi = None
+        for cand in page.query_selector_all("input[type=file]"):
+            acc = (cand.get_attribute("accept") or "").lower()
+            if "image" in acc and "video" not in acc:
+                fi = cand; break
+        if fi is None:
+            # 常驻 input 没找到→退回点封面区打开弹窗再找
+            for sel in [".select-cover_multi_drop", "[class*='select-cover']"]:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    try: el.scroll_into_view_if_needed(); el.click(); time.sleep(2.5); break
+                    except Exception: pass
+            for cand in page.query_selector_all("input[type=file]"):
+                acc = (cand.get_attribute("accept") or "").lower()
+                if "image" in acc and "video" not in acc:
+                    fi = cand; break
+        if fi is None:
+            print("[壹伴] 封面：没找到图片 file input，跳过（可手动设）。", flush=True)
+            return False
+        fi.set_input_files(cover_path); time.sleep(4.0)
+        # ④ 素材弹窗→裁剪→确认可能多步（下一步/使用→裁剪 确定/完成）。连点确认类主按钮至多 4 轮，
+        #    每轮点一个可见的主按钮或文本匹配按钮，直到没有可点的确认按钮。
+        clicked_any = False
+        for _ in range(4):
+            hit = False
+            for sel in [".weui-desktop-dialog .weui-desktop-btn_primary", ".js_crop_confirm",
+                        ".weui-desktop-dialog .btn_primary", ".image-cropper .weui-desktop-btn_primary",
+                        ".weui-desktop-btn_primary"]:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    try:
+                        time.sleep(1.0); el.click(); time.sleep(2.0); hit = True; clicked_any = True; break
+                    except Exception:
+                        pass
+            if not hit:
+                got = page.evaluate(
+                    r"""()=>{const texts=['下一步','使用','完成','确定','确认','保存'];
+                    const b=document.querySelectorAll('.weui-desktop-dialog button,.weui-desktop-dialog .weui-desktop-btn,'
+                      +'.weui-desktop-dialog a');
+                    for(const btn of b){const t=(btn.textContent||'').trim();
+                      if(texts.some(x=>x===t)){try{btn.click();return true;}catch(e){}}}return false;}""")
+                if got: clicked_any = True; time.sleep(2.0)
+                else: break
+        return bool(clicked_any)
+    except Exception as e:
+        print("[壹伴] 封面上传出错（%s）——正文草稿不受影响，可手动设封面。" % e, flush=True)
+        try: page.keyboard.press("Escape")
+        except Exception: pass
+        return False
+
+
+def run_publish(body_html, theme, title, save_fallback, text_only, timeout, cover_path=None):
     os.makedirs(SESSION_DIR, exist_ok=True)
     ctx = launch_persistent_context(user_data_dir=SESSION_DIR, headless=False, humanize=True)
     try:
@@ -1036,12 +1100,18 @@ def run_publish(body_html, theme, title, save_fallback, text_only, timeout):
         print("[壹伴] 正文已入编辑器（通道=%s，字数 %d/%d）。" % (method_a, landed_a, expect_len), flush=True)
 
         title_filled = _fill_title(frame, editor_page, title)
+        # 封面：正文+标题就位后设封面（借鉴 wechat-article-formatter 的 CDP setFileInputFiles 配方）
+        cover_ok = False
+        if cover_path:
+            print("[壹伴] 正在设封面……", flush=True)
+            cover_ok = _upload_cover(editor_page, cover_path)
+            print("[壹伴] 封面：%s" % ("已上传并确认" if cover_ok else "未能自动设（可手动）"), flush=True)
         saved_a, confirmed_a = _save_draft(editor_page)
         print("[壹伴] 第一段保存：%s%s" % ("已点保存" if saved_a else "没找到保存键",
               "，已见保存回执。" if confirmed_a else "，未见明确回执（编辑器多半已自动保存）。"), flush=True)
 
         phase_text = {"injected": True, "method": method_a, "chars": landed_a,
-                      "title_filled": title_filled, "save_clicked": saved_a,
+                      "title_filled": title_filled, "cover": cover_ok, "save_clicked": saved_a,
                       "save_confirmed": confirmed_a}
 
         if text_only:
@@ -1825,6 +1895,7 @@ def main():
     ap.add_argument("--card-width", type=int, default=1080,
                     help="cards 模式渲染视口宽（默认 1080，对应小红书 3:4 竖版卡宽）")
     ap.add_argument("--timeout", type=int, default=300, help="等登录+编辑器的秒数（默认 300）")
+    ap.add_argument("--cover", default="", help="封面图路径（publish 模式：正文就位后自动设封面）")
     args = ap.parse_args()
 
     if args.mode == "panel":
@@ -1867,7 +1938,8 @@ def main():
     else:
         fallback = args.out or os.path.join(os.path.dirname(os.path.abspath(args.body_file)),
                                             "公众号排版-成品兜底.html")
-        run_publish(body, args.theme, args.title, fallback, args.text_only, args.timeout)
+        run_publish(body, args.theme, args.title, fallback, args.text_only, args.timeout,
+                    cover_path=args.cover)
 
 
 if __name__ == "__main__":
