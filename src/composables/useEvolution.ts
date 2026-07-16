@@ -1,10 +1,13 @@
 /**
  * 大脑·进化视图的数据源（M10 循环工程）。
  *
- * 现阶段返回设计稿 mock；后续接真实后端时只需替换本文件内部实现（保持返回结构不变），
- * vBrain 视图与壳层无需改动。这就是「可替换的数据获取 composable」的边界。
+ * 已接真实后端（evolution.rs：evolution_state / flywheel_summary）。
+ * 账本为空（全新库）时回落设计稿示例数据并标记 source="mock"——真实账本绝不混入示例；
+ * 一旦用户写入第一张卡/第一条进化，视图即切换 source="live" 全量真数据。
+ * 视图端契约保持不变：EvolutionData 元组结构与 v2 设计稿一致。
  */
 import { ref, type Ref } from "vue";
+import { evolutionApi, type InsightCard, type EvolutionEntry, type PromptVersion } from "../tauri";
 
 export interface EvolutionData {
   /** 进化时间线：[cssClass, when, what, detail, status] */
@@ -63,12 +66,113 @@ const MOCK_EVOLUTION: EvolutionData = {
   },
 };
 
+const KIND_LABEL: Record<string, string> = {
+  prompt: "Prompt 进化", skill: "Skill 进化", expert: "专家团进化", schedule: "调度进化",
+};
+
+function fmtDate(secs: number, withTime = false): string {
+  if (!secs) return "—";
+  const d = new Date(secs * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const md = `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return withTime ? `${md} ${p(d.getHours())}:${p(d.getMinutes())}` : md;
+}
+
+/** 功劳分 → ★ 显示（封顶 5 星，半档用 ☆ 补位） */
+function merit(credit: number): string {
+  const full = Math.max(0, Math.min(5, Math.round(credit)));
+  return "★".repeat(full) + "☆".repeat(5 - full);
+}
+
+function mapLive(
+  insights: InsightCard[],
+  timeline: EvolutionEntry[],
+  versions: PromptVersion[],
+  fly: { health: number; monthInsights: number; solidified: number; rolledBack: number },
+): EvolutionData {
+  const tl = [...timeline].sort((a, b) => b.createdAt - a.createdAt);
+  return {
+    timeline: tl.map((e) => [
+      `evo-${e.kind}`,
+      fmtDate(e.createdAt, true),
+      `${KIND_LABEL[e.kind] ?? e.kind} · ${e.proposer === "autopilot" ? "主Agent提案" : "人工"}`,
+      [e.title, e.detail, e.expect && `预期：${e.expect}`, e.actual && `实际：${e.actual}`]
+        .filter(Boolean).join(" — "),
+      e.status,
+    ]),
+    cards: [...insights].sort((a, b) => b.createdAt - a.createdAt).map((c) => [
+      c.kind, c.title, c.content, c.scope || "全局", merit(c.credit), fmtDate(c.createdAt),
+    ]),
+    tree: [...versions]
+      .sort((a, b) => (a.expertId + a.platform + a.anchor).localeCompare(b.expertId + b.platform + b.anchor) || b.version - a.version)
+      .map((v) => [
+        `${v.expertId}（${v.platform ? v.platform + "补丁" : "基础画像"}·${v.anchor}）`,
+        `v${v.version}`,
+        v.status === "active" ? `当前${v.perfNote ? " · " + v.perfNote : ""}` : v.status === "rolled_back" ? "已回滚" : "已归档",
+        v.perfNote || "—",
+      ]),
+    flywheel: {
+      health: fly.health,
+      cardsThisMonth: fly.monthInsights,
+      solidified: fly.solidified,
+      rolledBack: fly.rolledBack,
+      evidence: tl.filter((e) => e.evidence.length).map((e) => `${e.title}（${KIND_LABEL[e.kind] ?? e.kind}）`),
+    },
+  };
+}
+
 /**
- * 返回进化数据（现为 mock，同步就绪）。返回 ref 以便将来平滑切成异步真实数据源：
- * 届时在此内部拉后端并回填 data.value，视图端零改动。
+ * 进化数据源。source="live" 表示后端账本有真数据；"mock" 表示账本为空、显示设计稿示例。
+ * 另暴露 live 原始记录与操作函数（手写卡 / 观察期裁决 / prompt 回滚），操作后自动 refresh。
  */
-export function useEvolution(): { data: Ref<EvolutionData>; loading: Ref<boolean> } {
-  const data = ref<EvolutionData>(MOCK_EVOLUTION);
+export function useEvolution() {
+  const data = ref<EvolutionData>(MOCK_EVOLUTION) as Ref<EvolutionData>;
   const loading = ref(false);
-  return { data, loading };
+  const source = ref<"mock" | "live">("mock");
+  const liveTimeline = ref<EvolutionEntry[]>([]);
+  const liveVersions = ref<PromptVersion[]>([]);
+
+  async function refresh() {
+    loading.value = true;
+    try {
+      const [st, fly] = await Promise.all([evolutionApi.state(), evolutionApi.flywheel()]);
+      liveTimeline.value = st.timeline;
+      liveVersions.value = st.promptVersions;
+      const empty = !st.insights.length && !st.timeline.length && !st.promptVersions.length;
+      if (empty) {
+        source.value = "mock";
+        data.value = MOCK_EVOLUTION;
+      } else {
+        source.value = "live";
+        data.value = mapLive(st.insights, st.timeline, st.promptVersions, fly);
+      }
+    } catch {
+      // 后端不可用（如纯浏览器预览）：保持 mock，不打断视图。
+      source.value = "mock";
+      data.value = MOCK_EVOLUTION;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function addCard(kind: string, title: string, content: string, scope?: string) {
+    await evolutionApi.insightAdd(kind, title, content, scope);
+    await refresh();
+  }
+  async function addEntry(kind: string, title: string, opts?: { detail?: string; expect?: string; evidence?: string[] }) {
+    await evolutionApi.add(kind, title, opts);
+    await refresh();
+  }
+  async function decideEntry(id: string, status: "已固化" | "已回滚", actual?: string) {
+    await evolutionApi.decide(id, status, actual);
+    await refresh();
+  }
+  async function rollbackPrompt(id: string) {
+    const v = await evolutionApi.promptVersionRollback(id);
+    await refresh();
+    return v;
+  }
+
+  void refresh();
+  return { data, loading, source, liveTimeline, liveVersions, refresh, addCard, addEntry, decideEntry, rollbackPrompt };
 }

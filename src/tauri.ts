@@ -513,6 +513,61 @@ export const expertMedia = {
 };
 
 // ──────────────────────────────────────────────────────────────
+// 循环工程（M10 大脑·进化，evolution.rs）：insight 卡 / 进化时间线 / prompt 版本树 / 飞轮
+// ──────────────────────────────────────────────────────────────
+export interface InsightCard {
+  id: string; kind: "anti_pattern" | "rule" | "playbook"; title: string; content: string;
+  scope: string; tags: string[]; credit: number; evidence: string[];
+  createdAt: number; updatedAt: number;
+}
+export interface EvolutionEntry {
+  id: string; kind: "prompt" | "skill" | "expert" | "schedule"; title: string; detail: string;
+  diff: string; proposer: string; expect: string; actual: string;
+  status: "观察中" | "已固化" | "已回滚"; insightIds: string[]; evidence: string[];
+  createdAt: number; decidedAt: number | null;
+}
+export interface PromptVersion {
+  id: string; expertId: string; platform: string; anchor: string; version: number;
+  content: string; status: "active" | "superseded" | "rolled_back"; perfNote: string; createdAt: number;
+}
+export interface FlywheelSummary {
+  health: number; monthInsights: number; solidified: number; rolledBack: number; observing: number;
+}
+export const evolutionApi = {
+  state: () => invoke<{ insights: InsightCard[]; timeline: EvolutionEntry[]; promptVersions: PromptVersion[] }>("evolution_state"),
+  insightAdd: (kind: string, title: string, content: string, scope?: string, tags?: string[], evidence?: string[]) =>
+    invoke<InsightCard>("insight_add", { kind, title, content, scope, tags, evidence }),
+  insightUpdate: (id: string, patch: { title?: string; content?: string; scope?: string; tags?: string[]; evidence?: string[] }) =>
+    invoke<InsightCard>("insight_update", { id, ...patch }),
+  insightDelete: (id: string) => invoke<void>("insight_delete", { id }),
+  add: (kind: string, title: string, opts?: { detail?: string; diff?: string; proposer?: string; expect?: string; insightIds?: string[]; evidence?: string[] }) =>
+    invoke<EvolutionEntry>("evolution_add", { kind, title, ...opts }),
+  decide: (id: string, status: "已固化" | "已回滚" | "观察中", actual?: string) =>
+    invoke<EvolutionEntry>("evolution_decide", { id, status, actual }),
+  promptVersionAdd: (expertId: string, anchor: string, content: string, platform?: string, perfNote?: string) =>
+    invoke<PromptVersion>("prompt_version_add", { expertId, platform, anchor, content, perfNote }),
+  promptVersionRollback: (id: string) => invoke<PromptVersion>("prompt_version_rollback", { id }),
+  flywheel: () => invoke<FlywheelSummary>("flywheel_summary"),
+};
+
+// ──────────────────────────────────────────────────────────────
+// 投递引擎 job（media_engine.rs）：生成→排版→上传全链路
+// ──────────────────────────────────────────────────────────────
+export interface MediaJob {
+  id: string; queueId?: string; platform: string; title: string; topic: string;
+  stages: string[]; status: "pending" | "running" | "done" | "failed" | "canceled";
+  stage: string; articlePath?: string; logPath: string; error?: string;
+  createdAt: number; updatedAt: number;
+}
+export const mediaJob = {
+  start: (a: { queueId?: string; platform?: string; title?: string; topic?: string; stages?: string[]; articlePath?: string }) =>
+    invoke<MediaJob>("media_job_start", a),
+  status: (jobId: string) => invoke<MediaJob>("media_job_status", { jobId }),
+  list: () => invoke<MediaJob[]>("media_job_list"),
+  cancel: (jobId: string) => invoke<void>("media_job_cancel", { jobId }),
+};
+
+// ──────────────────────────────────────────────────────────────
 // 盘管理（NAS 网络盘记忆 + 一键映射）
 // ──────────────────────────────────────────────────────────────
 export interface NasRecord {
