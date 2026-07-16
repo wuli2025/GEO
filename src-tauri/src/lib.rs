@@ -1,6 +1,7 @@
 // ── 引擎模块（桌面 + Docker 两种外壳共用同一份源码）──
 pub mod accounts;
 pub mod evolution;
+pub mod media_engine;
 pub mod mediaops;
 // 多人协作已抽为独立 crate(polaris-collab);壳件留本仓:
 // apihub=应用数据面分发(认识全部引擎), hosting=桌面一键当主机拼装。
@@ -232,6 +233,11 @@ pub fn run() {
             mediaops::mediaops_settings_set,
             mediaops::mediaops_metric_add,
             mediaops::mediaops_metrics_summary,
+            // 自媒体投递引擎（板块B）：生成→排版→上传草稿全链路 job
+            media_engine::media_job_start,
+            media_engine::media_job_status,
+            media_engine::media_job_list,
+            media_engine::media_job_cancel,
             // 循环工程（M10 大脑·进化）：insight 卡 / 进化时间线 / prompt 版本树 / 飞轮
             evolution::evolution_state,
             evolution::insight_add,
