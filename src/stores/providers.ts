@@ -19,6 +19,8 @@ export const useProvidersStore = defineStore("providers", () => {
   const currentId = ref<string>("claude-official");
   /** true = 联动系统 CLI(写 ~/.claude/settings.json); false = 隔离, 仅 Polaris 内生效 */
   const linkGlobal = ref(false);
+  /** 本地路由总开关(cc-switch 式代理模式): true = Anthropic 兼容供应商也统一经本地路由热切换转发 */
+  const routeLocal = ref(false);
   const usage = ref<UsageSummary | null>(null);
   /** 各供应商套餐额度 / 实时余额(id → 结果),按需懒查 */
   const balances = ref<Record<string, ProviderBalance>>({});
@@ -63,6 +65,7 @@ export const useProvidersStore = defineStore("providers", () => {
       providers.value = res.providers;
       currentId.value = res.currentId || "claude-official";
       linkGlobal.value = !!res.linkGlobal;
+      routeLocal.value = !!res.routeLocal;
     } catch (e) {
       error.value = String(e);
     } finally {
@@ -220,6 +223,19 @@ export const useProvidersStore = defineStore("providers", () => {
     }
   }
 
+  /** 切换「本地路由 · 热切换」总开关；开=所有 Anthropic 兼容供应商也统一经 127.0.0.1
+   *  本地路由转发(改 Key 即刻生效)，关=回到直连注入 */
+  async function setRouteMode(route: boolean): Promise<boolean> {
+    error.value = null;
+    try {
+      routeLocal.value = await providerApi.setRouteMode(route);
+      return true;
+    } catch (e) {
+      error.value = String(e);
+      return false;
+    }
+  }
+
   /** 切换供应商；返回是否成功（失败时 error 已设置，常见为缺 key） */
   async function switchTo(id: string): Promise<boolean> {
     error.value = null;
@@ -262,6 +278,7 @@ export const useProvidersStore = defineStore("providers", () => {
     providers,
     currentId,
     linkGlobal,
+    routeLocal,
     usage,
     balances,
     balanceBusy,
@@ -295,6 +312,7 @@ export const useProvidersStore = defineStore("providers", () => {
     claudeLoginPoll,
     claudeLoginCancel,
     setLinkMode,
+    setRouteMode,
     switchTo,
     save,
     remove,

@@ -4,6 +4,7 @@ import { ref, computed, onMounted } from "vue";
 import { ark, type ArkConfig } from "../../tauri";
 import { toast } from "../../composables/useToast";
 import { title, vApiTierHtml } from "./render";
+import ProviderSwitch from "./ProviderSwitch.vue";
 
 const props = defineProps<{ sub: string; platform: string }>();
 
@@ -79,6 +80,39 @@ async function genImage() {
   }
 }
 
+// ── 生图模型清单（据真实链路核实标注；状态：已接通 / 占位） ──
+type ImgStatus = "live" | "placeholder";
+interface ImgModel {
+  model: string;
+  channel: string;
+  status: ImgStatus;
+  note: string;
+  /** true = ark 当前配置的默认生图模型（随 cfg.imageModel 高亮） */
+  arkDefault?: boolean;
+}
+const imageModels = computed<ImgModel[]>(() => [
+  {
+    model: cfg.value.imageModel?.trim() || "doubao-seedream-4-5-251128",
+    channel: "火山方舟 Ark",
+    status: "live",
+    note: "真接线 ark_image_generate（ark.rs）· 生图通道当前默认",
+    arkDefault: true,
+  },
+  {
+    model: "MiniMax image-01",
+    channel: "MiniMax（api.minimaxi.com）",
+    status: "live",
+    note: "故事视频技能 minimax-image.mjs · 复用「粉丝福利」MiniMax key",
+  },
+  {
+    model: "gpt-image-2",
+    channel: "OpenAI 生图技能",
+    status: "placeholder",
+    note: "技能「AI 生图 gpt-image-2」· 未安装占位，装后按描述生图",
+  },
+]);
+const statusLabel: Record<ImgStatus, string> = { live: "已接通", placeholder: "占位" };
+
 const imgCode = computed(
   () =>
     'python ~/PolarisGEO/skills/media-publisher/scripts/ark_image.py \\\n' +
@@ -128,6 +162,37 @@ const imgCode = computed(
           </div>
         </div>
       </section>
+
+      <!-- 切换中心（cc-switch 复刻的供应商坞·内联版；与侧栏坞共用 store） -->
+      <section style="margin-top: 16px">
+        <ProviderSwitch />
+      </section>
+
+      <!-- 生图模型清单 -->
+      <section style="margin-top: 16px">
+        <div class="card">
+          <h3>生图模型
+            <span style="font-size: var(--text-xs); color: var(--muted); font-weight: 400">已接通 / 占位 · 据真实链路核实</span>
+          </h3>
+          <div class="imglist">
+            <div v-for="m in imageModels" :key="m.model" class="imgrow" :class="{ live: m.status === 'live', def: m.arkDefault }">
+              <span class="imgdot" :class="m.status" />
+              <div class="imginfo">
+                <div class="imgname">
+                  {{ m.model }}
+                  <span v-if="m.arkDefault" class="imgtag def">当前默认</span>
+                </div>
+                <div class="imgnote">{{ m.channel }} · {{ m.note }}</div>
+              </div>
+              <span class="imgstat" :class="m.status">{{ statusLabel[m.status] }}</span>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px; margin-top: 12px; align-items: center">
+            <button class="btn ghost" data-gosub="img">前往生图通道（img 子标签）→</button>
+            <span class="foot" style="margin: 0">火山方舟 Seedream 为默认生图链路；MiniMax image-01 供故事视频插画；gpt-image-2 为技能占位</span>
+          </div>
+        </div>
+      </section>
     </template>
 
     <!-- 模型分层（静态说明） -->
@@ -163,3 +228,20 @@ const imgCode = computed(
     </template>
   </div>
 </template>
+
+<style scoped>
+.imglist { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.imgrow { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--bg-soft); }
+.imgrow.def { border-color: var(--primary); background: var(--primary-soft, var(--bg-soft)); }
+.imgdot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.imgdot.live { background: #16a34a; box-shadow: 0 0 0 3px #16a34a22; }
+.imgdot.placeholder { background: var(--muted); }
+.imginfo { flex: 1; min-width: 0; }
+.imgname { font-size: 12.5px; font-weight: 600; color: var(--text); font-family: var(--mono); display: flex; align-items: center; gap: 6px; }
+.imgtag { font-size: 8.5px; padding: 0 5px; border-radius: 3px; font-weight: 600; letter-spacing: 0.5px; }
+.imgtag.def { color: var(--primary-deep, var(--primary)); border: 1px solid var(--primary); }
+.imgnote { font-size: 10.5px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imgstat { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 5px; flex-shrink: 0; }
+.imgstat.live { color: #16a34a; background: #16a34a14; border: 1px solid #16a34a55; }
+.imgstat.placeholder { color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
+</style>
