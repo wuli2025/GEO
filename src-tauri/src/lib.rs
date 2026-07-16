@@ -245,6 +245,7 @@ pub fn run() {
             evolution::insight_delete,
             evolution::evolution_add,
             evolution::evolution_decide,
+            evolution::evolution_delete,
             evolution::prompt_version_add,
             evolution::prompt_version_rollback,
             evolution::flywheel_summary,

@@ -458,6 +458,14 @@ pub fn evolution_decide(
     Ok(decided)
 }
 
+/// 删除进化条目（撤销误登记/清理测试数据用；正常流程应走 decide 留档而非删除）。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn evolution_delete(id: String) -> Result<(), String> {
+    STORE.write().timeline.retain(|e| e.id != id);
+    persist();
+    Ok(())
+}
+
 // ───────────────────────── Commands: prompt 版本树 ─────────────────────────
 
 /// 提交某专家某锚点的新版本：旧 active 版转 superseded，新版本号 = 最大版本 + 1。

@@ -599,6 +599,39 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     let words = body.chars().count();
     log_line(log_path, &format!("generate：产出正文 {words} 字符"));
 
+    // ── 内容守卫（板块H E2E 教训）：claude CLI 会把「模型不可用」等错误当普通文本
+    // 输出（exit 0），无守卫时 121 字报错串曾一路排版、投递成真草稿。两道闸：
+    // 1) 错误形态识别——CLI 已知错误话术直接判失败；2) 最小字数——正文要求 1200 字，
+    // 低于 300 字符必是异常产物，宁可失败也不许污染草稿箱。
+    let guard_err = |msg: String| -> String {
+        log_line(log_path, &format!("generate：内容守卫拦截——{msg}"));
+        format!("generate 内容守卫拦截：{msg}")
+    };
+    let low = body.to_ascii_lowercase();
+    const CLI_ERROR_MARKS: &[&str] = &[
+        "issue with the selected model",
+        "run --model to pick a different model",
+        "may not exist or you may not have access",
+        "api error",
+        "invalid api key",
+        "credit balance is too low",
+        "rate limit",
+        "please run /login",
+    ];
+    if let Some(mark) = CLI_ERROR_MARKS.iter().find(|m| low.contains(**m)) {
+        return Err(guard_err(format!(
+            "产出命中 CLI 错误话术「{mark}」，疑为模型/通道故障回显而非正文（前 200 字符：{}）",
+            body.chars().take(200).collect::<String>()
+        )));
+    }
+    const MIN_ARTICLE_CHARS: usize = 300;
+    if words < MIN_ARTICLE_CHARS {
+        return Err(guard_err(format!(
+            "正文仅 {words} 字符（下限 {MIN_ARTICLE_CHARS}），不足以成稿（前 200 字符：{}）",
+            body.chars().take(200).collect::<String>()
+        )));
+    }
+
     let path = article_path_for(&job.platform, &job.title);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建产物目录失败：{e}"))?;

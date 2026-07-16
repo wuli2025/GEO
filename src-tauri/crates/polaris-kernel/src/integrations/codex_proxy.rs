@@ -611,6 +611,17 @@ fn build_responses_body(req: &Value) -> Result<Value, String> {
 }
 
 /// 模型映射: 空→默认; gpt-*/o*/codex 透传; 其余(claude-* 等)→默认 codex 模型
+/// 防输错归一化：`gpt5.x` 系列少横杠是最常见笔误（上游真实 id 为 `gpt-5.x`），
+/// 在路由层自动补上——用户配 `gpt5.6-sol` 与 `gpt-5.6-sol` 等效，杜绝 404。
+fn normalize_gpt(m: &str) -> String {
+    let low = m.to_ascii_lowercase();
+    if low.starts_with("gpt") && !low.starts_with("gpt-") && low.len() > 3 {
+        format!("gpt-{}", &m[3..])
+    } else {
+        m.to_string()
+    }
+}
+
 fn map_model(m: &str) -> String {
     let low = m.to_ascii_lowercase();
     if low.is_empty() {
@@ -622,7 +633,7 @@ fn map_model(m: &str) -> String {
         || low.starts_with("o3")
         || low.starts_with("o4")
     {
-        return m.to_string();
+        return normalize_gpt(m);
     }
     DEFAULT_MODEL.into()
 }
@@ -794,9 +805,9 @@ fn is_reasoning_model(m: &str) -> bool {
 fn map_model_openai(m: &str, default_model: &str) -> String {
     let t = m.trim();
     if t.is_empty() || t.to_ascii_lowercase().starts_with("claude") {
-        default_model.to_string()
+        normalize_gpt(default_model)
     } else {
-        t.to_string()
+        normalize_gpt(t)
     }
 }
 
@@ -1718,6 +1729,20 @@ mod tests {
     }
 
     #[test]
+    fn normalize_gpt_fixes_missing_dash() {
+        // 防输错：gpt5.x 少横杠自动补成上游真实 id 形态 gpt-5.x
+        assert_eq!(normalize_gpt("gpt5.6-sol"), "gpt-5.6-sol");
+        assert_eq!(map_model("gpt5.6-sol"), "gpt-5.6-sol");
+        assert_eq!(map_model_openai("gpt5.6-terra", "x"), "gpt-5.6-terra");
+        // 本就带横杠 / 非 gpt 前缀不受影响
+        assert_eq!(normalize_gpt("gpt-5.6-sol"), "gpt-5.6-sol");
+        assert_eq!(normalize_gpt("o3-mini"), "o3-mini");
+        // 默认模型回落时也归一化
+        assert_eq!(map_model_openai("", "gpt5.6-sol"), "gpt-5.6-sol");
+        assert_eq!(map_model_openai("claude-x", "gpt5.6-sol"), "gpt-5.6-sol");
+    }
+
+    #[test]
     fn extract_system_handles_all_shapes() {
         assert_eq!(extract_system(&json!({"system": "hi"})), "hi");
         assert_eq!(
@@ -1832,7 +1857,8 @@ mod tests {
             "max_tokens": 50, "temperature": 0.9,
         });
         let b2 = build_chat_body(&req2, "gpt5.6-sol").expect("应翻译成功");
-        assert_eq!(b2["model"], "gpt5.6-sol");
+        // 默认模型回落时经 normalize_gpt 归一化为上游真实 id 形态（补横杠）
+        assert_eq!(b2["model"], "gpt-5.6-sol");
         assert!(b2.get("max_tokens").is_none());
         assert_eq!(b2["max_completion_tokens"], 50);
         assert!(b2.get("temperature").is_none());

@@ -1008,6 +1008,7 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
             req_str(a, "status")?,
             opt_str(a, "actual"),
         )?),
+        "evolution_delete" => ok(crate::evolution::evolution_delete(req_str(a, "id")?)?),
         "prompt_version_add" => ok(crate::evolution::prompt_version_add(
             req_str(a, "expertId")?,
             opt_str(a, "platform"),

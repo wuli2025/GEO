@@ -544,6 +544,7 @@ export const evolutionApi = {
     invoke<EvolutionEntry>("evolution_add", { kind, title, ...opts }),
   decide: (id: string, status: "已固化" | "已回滚" | "观察中", actual?: string) =>
     invoke<EvolutionEntry>("evolution_decide", { id, status, actual }),
+  delete: (id: string) => invoke<void>("evolution_delete", { id }),
   promptVersionAdd: (expertId: string, anchor: string, content: string, platform?: string, perfNote?: string) =>
     invoke<PromptVersion>("prompt_version_add", { expertId, platform, anchor, content, perfNote }),
   promptVersionRollback: (id: string) => invoke<PromptVersion>("prompt_version_rollback", { id }),
