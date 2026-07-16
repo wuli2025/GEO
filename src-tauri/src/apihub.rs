@@ -924,6 +924,148 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
         )?)?),
         "media_accounts_status" => ok(accounts::media_accounts_status()),
         "media_account_forget" => ok(accounts::media_account_forget(req_str(a, "platform")?)?),
+        // 打开登录/发文浏览器窗口：需要宿主有图形环境（NAS 纯容器会在 python 侧报错，错误可读）
+        "media_account_open" => ok(accounts::media_account_open(
+            req_str(a, "platform")?,
+            opt_str(a, "target").unwrap_or_else(|| "login".to_string()),
+        )?),
+
+        // ── 自媒体运营中心（题库/队列/平台设置/度量，mediaops.rs）──
+        "mediaops_state" => ok(crate::mediaops::mediaops_state()),
+        "mediaops_topic_add" => ok(crate::mediaops::mediaops_topic_add(
+            req_str(a, "platform")?,
+            req_str(a, "title")?,
+            opt_str(a, "angle"),
+            a.get("keywords").map(|_| vec_str(a, "keywords")),
+            opt_str(a, "source"),
+        )),
+        "mediaops_topic_update" => ok(crate::mediaops::mediaops_topic_update(
+            req_str(a, "id")?,
+            opt_str(a, "status"),
+            opt_str(a, "title"),
+            opt_str(a, "angle"),
+            opt_str(a, "note"),
+        )?),
+        "mediaops_topic_delete" => ok(crate::mediaops::mediaops_topic_delete(req_str(a, "id")?)?),
+        "mediaops_queue_add" => ok(crate::mediaops::mediaops_queue_add(
+            req_str(a, "platform")?,
+            opt_str(a, "topicId"),
+            req_str(a, "title")?,
+            opt_str(a, "scheduledAt"),
+        )),
+        "mediaops_queue_update" => ok(crate::mediaops::mediaops_queue_update(
+            req_str(a, "id")?,
+            opt_str(a, "status"),
+            opt_str(a, "note"),
+            opt_str(a, "articlePath"),
+        )?),
+        "mediaops_queue_delete" => ok(crate::mediaops::mediaops_queue_delete(req_str(a, "id")?)?),
+        "mediaops_settings_set" => {
+            let patch = serde_json::from_value(a.get("patch").cloned().unwrap_or(Value::Null))
+                .map_err(|e| format!("patch 参数无效：{e}"))?;
+            ok(crate::mediaops::mediaops_settings_set(req_str(a, "platform")?, patch)?)
+        }
+        "mediaops_metric_add" => ok(crate::mediaops::mediaops_metric_add(
+            req_str(a, "platform")?,
+            req_str(a, "kind")?,
+            a.get("tokens").and_then(|v| v.as_u64()),
+            opt_f64(a, "cost"),
+            opt_str(a, "detail"),
+        )?),
+        "mediaops_metrics_summary" => ok(crate::mediaops::mediaops_metrics_summary()),
+
+        // ── 循环工程（M10 大脑·进化，evolution.rs）──
+        "evolution_state" => ok(crate::evolution::evolution_state()),
+        "insight_add" => ok(crate::evolution::insight_add(
+            req_str(a, "kind")?,
+            req_str(a, "title")?,
+            req_str(a, "content")?,
+            opt_str(a, "scope"),
+            a.get("tags").map(|_| vec_str(a, "tags")),
+            a.get("evidence").map(|_| vec_str(a, "evidence")),
+        )?),
+        "insight_update" => ok(crate::evolution::insight_update(
+            req_str(a, "id")?,
+            opt_str(a, "title"),
+            opt_str(a, "content"),
+            opt_str(a, "scope"),
+            a.get("tags").map(|_| vec_str(a, "tags")),
+            a.get("evidence").map(|_| vec_str(a, "evidence")),
+        )?),
+        "insight_delete" => ok(crate::evolution::insight_delete(req_str(a, "id")?)?),
+        "evolution_add" => ok(crate::evolution::evolution_add(
+            req_str(a, "kind")?,
+            req_str(a, "title")?,
+            opt_str(a, "detail"),
+            opt_str(a, "diff"),
+            opt_str(a, "proposer"),
+            opt_str(a, "expect"),
+            a.get("insightIds").map(|_| vec_str(a, "insightIds")),
+            a.get("evidence").map(|_| vec_str(a, "evidence")),
+        )?),
+        "evolution_decide" => ok(crate::evolution::evolution_decide(
+            req_str(a, "id")?,
+            req_str(a, "status")?,
+            opt_str(a, "actual"),
+        )?),
+        "prompt_version_add" => ok(crate::evolution::prompt_version_add(
+            req_str(a, "expertId")?,
+            opt_str(a, "platform"),
+            req_str(a, "anchor")?,
+            req_str(a, "content")?,
+            opt_str(a, "perfNote"),
+        )?),
+        "prompt_version_rollback" => {
+            ok(crate::evolution::prompt_version_rollback(req_str(a, "id")?)?)
+        }
+        "flywheel_summary" => ok(crate::evolution::flywheel_summary()),
+
+        // ── 投递引擎全链路 job（media_engine.rs）──
+        // 说明：generate 需宿主可执行 claude CLI；upload 需图形环境跑浏览器。
+        // 纯容器里前者可用（镜像预装 claude）、后者会在脚本侧给出可读失败并落 fail 度量。
+        "media_job_start" => ok(crate::media_engine::media_job_start(
+            opt_str(a, "queueId"),
+            opt_str(a, "platform"),
+            opt_str(a, "title"),
+            opt_str(a, "topic"),
+            a.get("stages").map(|_| vec_str(a, "stages")),
+            opt_str(a, "articlePath"),
+        )?),
+        "media_job_status" => ok(crate::media_engine::media_job_status(req_str(a, "jobId")?)?),
+        "media_job_list" => ok(crate::media_engine::media_job_list()),
+        "media_job_cancel" => ok(crate::media_engine::media_job_cancel(req_str(a, "jobId")?)?),
+
+        // ── 火山方舟 API 中心（ark.rs）──
+        "ark_config_get" => ok(ark::ark_config_get()?),
+        "ark_config_set" => {
+            let patch = serde_json::from_value(a.get("patch").cloned().unwrap_or(Value::Null))
+                .map_err(|e| format!("patch 参数无效：{e}"))?;
+            ok(ark::ark_config_set(patch)?)
+        }
+        "ark_test" => ok(ark::ark_test()?),
+        "ark_models" => ok(ark::ark_models()?),
+        "ark_image_generate" => ok(ark::ark_image_generate(
+            req_str(a, "prompt")?,
+            opt_str(a, "size"),
+            opt_str(a, "outPath"),
+        )?),
+        "ark_chat_test" => ok(ark::ark_chat_test(req_str(a, "prompt")?, opt_str(a, "model"))?),
+
+        // ── 统一专家团：平台提示词补丁（expert.rs）──
+        "expert_media_list" => ok(crate::expert::expert_media_list()),
+        "expert_media_doc" => ok(crate::expert::expert_media_doc(
+            req_str(a, "expertId")?,
+            req_str(a, "platform")?,
+        )),
+        "expert_media_overlay_get" => ok(crate::expert::expert_media_overlay_get(
+            req_str(a, "platform")?,
+            req_str(a, "expertId")?,
+        )),
+        "expert_media_overlay_set" => ok(crate::expert::expert_media_overlay_set(
+            req_str(a, "platform")?,
+            req_str(a, "expertId")?,
+            req_str(a, "content")?,
+        )?),
 
         // ── 盘管理(NAS 网络盘记忆 + 映射)──
         "nas_list" => ok(crate::integrations::nas::nas_list()),
