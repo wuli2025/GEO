@@ -8,8 +8,11 @@ Polaris GEO · 多平台草稿投递引擎 draft_uploader.py
 **只存草稿 / 停在编辑页，绝不点发布**。发布键永远留给用户亲手点。
 
 设计与 wechat_yiban.py 同源：
-  - CloakBrowser 优先（drop-in 替换 Playwright），没装退回 playwright.sync_api；
-  - launch_persistent_context 持久 profile（登录态永久留在 ~/PolarisGEO/browser-profiles/{platform}）；
+  - 浏览器：**detached 本地 Chrome + CDP 接管**（缺省引擎）——浏览器是独立进程，脚本结束
+    （含被上游默认超时硬杀）只断开 CDP 连接，窗口留在原地给用户预览草稿、核对配图、亲手点
+    发布，根治「传完自己关窗」；每平台固定调试端口，同平台连投复用已在跑的 Chrome。
+    CDP 不可用时回退 playwright(channel=chrome) → CloakBrowser → 自带 chromium；
+  - 持久 profile（登录态永久留在 ~/PolarisGEO/browser-profiles/{platform}）；
   - 正文注入走「粘贴通道」：合成 ClipboardEvent + DataTransfer（text/html + text/plain），
     走编辑器（ProseMirror / Draft.js / Quill）自己的 schema 解析与事务模型，内容才真正入档；
     三级降级：paste → execCommand(insertHTML/insertText) → innerText 直写，每级按字数校验；
@@ -38,14 +41,17 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
-# ─────────── 本地真实 Chrome 优先（channel=chrome），CloakBrowser 仅作回退 ───────────
-# 用户要求：优先本地浏览器。本地 Chrome 渲染正常（模拟浏览器 CloakBrowser 会把某些平台
-# 编辑器布局渲染歪、发布键点不准）；只有本地 Chrome 起不来才回退 CloakBrowser。
+# ─────────── 浏览器引擎：CDP detached Chrome 缺省，多级回退 ───────────
+# 优先级：① detached 本地 Chrome + CDP 接管（脚本退出不关窗，见下方 CDP 保活段）
+#        ② playwright channel=chrome  ③ CloakBrowser  ④ playwright 自带 chromium。
+# 本地 Chrome 渲染正常（CloakBrowser 会把某些平台编辑器布局渲染歪、发布键点不准）。
 # 可用环境变量 POLARIS_BROWSER=cloak 强制用 CloakBrowser。
 try:
     from playwright.sync_api import sync_playwright as _sync_pw  # type: ignore
@@ -58,14 +64,106 @@ except Exception:
 
 BROWSER_ENGINE = "local-chrome"
 
+# ─────────── CDP 保活（与 wechat_yiban.py 同配方，2026-07 真机验证）───────────
+# 「上传完不要关浏览器、留窗预览」的根：浏览器必须是**独立进程**。playwright 起的浏览器
+# 是脚本的子进程，脚本一退（或被上游 2 分钟默认超时硬杀）整树连坐，窗口跟着没——
+# 这正是过去「传完自己关窗、预览做不了」的病灶。改为：命令行 detached 起真实 Chrome
+# （Windows 上加 CREATE_BREAKAWAY_FROM_JOB 脱离 Job Object，否则 CI/工具壳里父进程一死
+# 整 Job 被杀）→ connect_over_cdp 接管 → 收尾只断连不关窗。
+# 每平台一个固定调试端口：同平台连投第二篇直接接管已在跑的 Chrome（免重启、免 profile 锁）。
+CDP_BASE_PORT = int(os.environ.get("POLARIS_MEDIA_CDP_PORT", "9330"))
+_CDP_OFFSET = {"zhihu": 1, "toutiao": 2, "bilibili": 3, "baijia": 4, "douyin": 5}
+
+
+def _cdp_port(platform):
+    return CDP_BASE_PORT + _CDP_OFFSET.get(platform, 9)
+
+
+def _cdp_version(port):
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=2) as r:
+            return json.loads(r.read().decode("utf-8", "ignore"))
+    except Exception:
+        return None
+
+
+def _chrome_exe():
+    cands = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/usr/bin/google-chrome", "/usr/bin/chromium",
+    ]
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("chromium")
+
+
+def _spawn_chrome_detached(exe, profile, port):
+    """脱离父进程启动 Chrome —— 浏览器必须活过本脚本退出。
+    Windows 上工具/CI 常把子进程放进 Job Object，父进程一死整树被杀；
+    CREATE_BREAKAWAY_FROM_JOB 显式脱离该 Job，这是「窗口留给用户」能成立的关键。"""
+    args = [exe, "--remote-debugging-port=%d" % port, "--user-data-dir=%s" % profile,
+            "--no-first-run", "--no-default-browser-check",
+            "--start-maximized", "about:blank"]
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.name == "nt":
+        DETACHED, NEW_GROUP, BREAKAWAY = 0x00000008, 0x00000200, 0x01000000
+        try:
+            return subprocess.Popen(args, creationflags=DETACHED | NEW_GROUP | BREAKAWAY, **kw)
+        except OSError:
+            return subprocess.Popen(args, creationflags=DETACHED | NEW_GROUP, **kw)
+    return subprocess.Popen(args, start_new_session=True, **kw)
+
+
+def _connect_cdp(platform, profile):
+    """detached Chrome + CDP 接管。任何一步不成返回 None，由 open_editor 回退其它引擎。"""
+    if _sync_pw is None:
+        return None
+    exe = _chrome_exe()
+    if not exe:
+        return None
+    port = _cdp_port(platform)
+    try:
+        if not _cdp_version(port):
+            os.makedirs(profile, exist_ok=True)
+            _spawn_chrome_detached(exe, os.path.abspath(profile), port)
+            for _i in range(30):
+                time.sleep(0.5)
+                if _cdp_version(port):
+                    break
+        ver = _cdp_version(port)
+        if not ver:
+            return None
+        pw = _sync_pw().start()
+        try:
+            browser = pw.chromium.connect_over_cdp("http://127.0.0.1:%d" % port)
+        except Exception:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+            return None
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        ctx._pw = pw
+        ctx._cdp = True          # 标记：收尾只断连，绝不关窗
+        _log("cdp_attached", browser=ver.get("Browser", "?"), port=port)
+        return ctx
+    except Exception:
+        return None
+
 
 def _launch_local_chrome(user_data_dir, headless):
-    """playwright 驱动本地安装的 Google Chrome（channel=chrome），大视口保证布局正常。"""
+    """playwright 驱动本地安装的 Google Chrome（channel=chrome）。
+    用 no_viewport + --start-maximized 起**真·最大化窗口**：页面视口跟随真实窗口大小，
+    消除「固定 1600x1000 视口 vs 更大窗口」的错位死区（表现为鼠标滚不到底、够不着抖音发布栏）。"""
     pw = _sync_pw().start()
     ctx = pw.chromium.launch_persistent_context(
         user_data_dir, headless=headless, channel="chrome",
-        viewport={"width": 1600, "height": 1000},
-        args=["--no-first-run", "--no-default-browser-check"])
+        no_viewport=True,
+        args=["--no-first-run", "--no-default-browser-check", "--start-maximized"])
     ctx._pw = pw
     return ctx
 
@@ -97,6 +195,102 @@ def launch_persistent_context(user_data_dir=".", headless=False, humanize=False,
         BROWSER_ENGINE = "playwright-chromium"
         return ctx
     raise RuntimeError("本地 Chrome / CloakBrowser / playwright 都不可用，请先安装 Google Chrome 或 pip install playwright cloakbrowser")
+
+
+def _pick_page(ctx):
+    """挑一个可用页：只复用空白页（about:blank）。CDP 接管已在跑的 Chrome 时，
+    里面可能还开着用户上一篇草稿的预览页——绝不抢占非空白标签页，另开新页。"""
+    try:
+        for p in (getattr(ctx, "pages", None) or []):
+            try:
+                if (p.url or "about:blank") in ("about:blank", ""):
+                    return p
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ctx.new_page()
+
+
+def _new_page_goto(ctx, url, timeout_ms=25000, tries=2):
+    """取页并导航，超时重试。domcontentloaded 就返回（不等 networkidle，避免国内站长连接吊死）。"""
+    page = _pick_page(ctx)
+    last = None
+    for i in range(tries):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return page
+        except Exception as e:
+            last = e
+            _log("goto_retry", ok=False, attempt=i + 1, error=str(e).splitlines()[0][:80])
+            time.sleep(2)
+    raise last
+
+
+def open_editor(cfg):
+    """启动浏览器 + 打开编辑页，多引擎自动回退：
+      cdp（缺省，脚本退出不关窗）→ local playwright(channel=chrome) → CloakBrowser → 自带 chromium。
+    本地 Chrome 若在启动/导航阶段崩溃（Target closed）或导航超时 → 自动收掉、换下一个引擎重来，
+    彻底免掉「头条本地 Chrome 一启动就退」和「goto 卡满 30s」两类硬伤。返回 (ctx, page)。
+    POLARIS_BROWSER=cloak 时直接从 Cloak 起（无保窗能力，收尾会如实说明）。"""
+    global BROWSER_ENGINE
+    profile = cfg["profile"]
+    platform = os.path.basename(profile)
+    os.makedirs(profile, exist_ok=True)
+    forced_cloak = os.environ.get("POLARIS_BROWSER", "").lower() in ("cloak", "cloakbrowser")
+    engines = []
+    if not forced_cloak and _sync_pw is not None:
+        engines.append("cdp")    # 首选：detached Chrome + CDP，唯一能「脚本退了窗口还在」的引擎
+        engines.append("local")
+    if _cloak_launch is not None:
+        engines.append("cloak")
+    if _sync_pw is not None:
+        engines.append("pw")  # 最后兜底：playwright 自带 chromium
+    last = None
+    for eng in engines:
+        ctx = None
+        try:
+            if eng == "cdp":
+                ctx = _connect_cdp(platform, profile)
+                if ctx is None:
+                    raise RuntimeError("CDP 接管不可用（无 Chrome 或调试端口起不来）")
+                BROWSER_ENGINE = "cdp-chrome"
+            elif eng == "local":
+                ctx = _launch_local_chrome(profile, False)
+                BROWSER_ENGINE = "local-chrome"
+            elif eng == "cloak":
+                ctx = _cloak_launch(user_data_dir=profile, headless=False, humanize=True)
+                BROWSER_ENGINE = "cloakbrowser"
+            else:
+                pw = _sync_pw().start()
+                ctx = pw.chromium.launch_persistent_context(profile, headless=False)
+                ctx._pw = pw
+                BROWSER_ENGINE = "playwright-chromium"
+            _log("browser_launched", engine=BROWSER_ENGINE, profile=profile)
+            page = _new_page_goto(ctx, cfg["draft_url"], cfg.get("goto_timeout", 25000))
+            _log("page_opened", url=page.url, engine=BROWSER_ENGINE)
+            ctx._polaris_page = page   # 记住本次投递开的页：--close-after 只收它，不动用户其它标签
+            return ctx, page
+        except Exception as e:
+            last = e
+            _log("engine_fallback", ok=False, engine=eng, error=str(e).splitlines()[0][:90])
+            try:
+                if ctx:
+                    if getattr(ctx, "_cdp", False):
+                        # CDP 引擎失败：只断连。Chrome 是独立进程，留着给用户/下次接管；
+                        # 若真起不来，后续引擎会因 profile 被占而继续回退，属可接受的罕见路径。
+                        pw = getattr(ctx, "_pw", None)
+                        if pw:
+                            pw.stop()
+                    else:
+                        ctx.close()
+                        pw = getattr(ctx, "_pw", None)
+                        if pw:
+                            pw.stop()
+            except Exception:
+                pass
+            time.sleep(1.5)  # 等 profile 锁释放，下个引擎才能用
+    raise last or RuntimeError("open_editor：所有浏览器引擎均失败")
 
 
 # ───────────────────────── 平台适配器（后台改版只改这里）─────────────────────────
@@ -148,22 +342,30 @@ PLATFORMS = {
             "div.ProseMirror",
             ".syl-editor [contenteditable=true]",
         ],
-        "save_selectors": [
-            "button:has-text('存草稿')",
-            "div[class*='garbage']:has-text('存草稿')",
-            "*:text-is('存草稿')",
-            "button:has-text('保存草稿')",
+        # 2026-07-14 二次校准：头条新版编辑器已去掉「存草稿」按钮，改为**页脚自动保存**
+        # （span.footer-tip-save：编辑即「草稿保存中...」→settle 成「草稿已保存」）。故按 auto_save
+        # 处理——只等页脚回执，绝不再回退 Ctrl+S（那会弹浏览器保存框、且根本不存草稿）。
+        # save_selectors 保留仅为让收尾文案判定「有草稿箱」，auto_save 分支会先短路、不真正点它。
+        "save_selectors": ["span.footer-tip-save"],
+        "auto_save": True,
+        # 头条页脚长期显示「草稿保存中...」（实测 20s+ 不 settle 成「已保存」），这是它一直在
+        # 自动持久化到草稿箱的常态指示——其存在即证明内容已被编辑器接管并写草稿，故兜底接受它。
+        "save_ok_selectors": [
+            "span.footer-tip-save:has-text('已保存')",
+            "*:has-text('草稿已保存')",
+            "span.footer-tip-save",
         ],
-        "auto_save": False,
-        "save_ok_selectors": ["*:has-text('保存成功')", "*:has-text('草稿保存成功')", "*:has-text('已保存')"],
     },
     "bilibili": {
-        # 2026-07 实测：B站专栏正文用非标准编辑器（4 次 DOM 探测均无任何 contenteditable/
-        # textarea/富文本类元素，点击后焦点仍停在 body，疑似 canvas 类自绘），标准选择器
-        # 自动化够不到。故降级 partial：自动填标题（标题 input 可用）+ 正文进剪贴板，人工粘贴。
+        # 2026-07-14 深挖结论：B站专栏编辑器正在迁移且对自动化不友好——
+        #   · 旧 #/new 已下线，页面空白（SPA 不挂载任何元素）
+        #   · 新 #/web 弹「旧版编辑器已停止使用」模态，标题 textarea + 正文 div.ql-editor 虽在 DOM 但
+        #     全部 visibility:false，点「前往」按钮 same-page 不跳转、编辑器始终不可见（疑似反自动化隐藏）
+        # 本地 Chrome 和 CloakBrowser 均如此。标准/穿透 locator 都点不到可见编辑器 → 维持 partial：
+        # 打开编辑页 + 标题正文进剪贴板，人工 Ctrl+V。待 B站迁移稳定或另寻 CDP/坐标方案。
         "name": "B站专栏",
         "status": "partial",
-        "draft_url": "https://member.bilibili.com/read/editor/#/new",
+        "draft_url": "https://member.bilibili.com/read/editor/#/web",
         "profile": _profile("bilibili"),
         "login_url_patterns": ["passport.bilibili.com/login", "passport.bilibili.com"],
         "login_selectors": [".login-scan-box", ".login-pwd-wp", "div.bili-mini-mask"],
@@ -187,21 +389,45 @@ PLATFORMS = {
         "save_ok_selectors": ["*:has-text('保存成功')", "*:has-text('已保存')", "*:has-text('保存于')"],
     },
     "baijia": {
-        # 2026-07 实测：百家号用百度 UEditor，正文在 about:blank 子 iframe 的 <body contenteditable>
-        # 里，页面有明确「存草稿」按钮 → 可全自动。正文选择器靠 _find_in_frames 进子 iframe 命中 body。
+        # 2026-07-14 真机 DOM 探测重校准：百家号已换 React 新编辑器（FeEditorApp）——
+        #   · 标题 = 主框架里唯一的 div[contenteditable=true]（不是 input/textarea！旧配置在这里全落空）
+        #   · 正文 = url 为空的子 iframe 里的 <body class="view news-editor-pc" contenteditable>
+        #   · 封面 = #bjhNewsCover 区块：先点「单图」radio → 点「选择封面」弹窗 → input[accept*=image] → 「确定」
+        # 标题选择器只用 div[ce]（iframe 里的正文是 body 标签，不会被 div[ce] 误命中）；
+        # 正文选择器去掉松散的 [contenteditable=true] 兜底，避免把正文误灌进标题 div。
         "name": "百家号",
         "status": "full",
         "draft_url": "https://baijiahao.baidu.com/builder/rc/edit?type=news",
         "profile": _profile("baijia"),
         "login_url_patterns": ["builder/theme/bjh/login", "passport.baidu.com", "/login"],
         "login_selectors": ["#passport-login-pop", ".pass-login-pop", ".tang-pass-qrcode"],
-        "title_selectors": ["textarea[placeholder*='标题']", "input[placeholder*='标题']",
-                            "textarea.article-title", ".title-content textarea", "div[contenteditable=true][data-placeholder*='标题']"],
-        "editor_selectors": ["body.view", "body[contenteditable=true]", "body.edui-body-container",
-                            "#ueditor_0", "[contenteditable=true]"],
+        "title_selectors": ["div[contenteditable=true]",
+                            "textarea[placeholder*='标题']", "input[placeholder*='标题']"],
+        "editor_selectors": ["body.view.news-editor-pc", "body.view", "body[contenteditable=true]",
+                            "body.edui-body-container"],
+        "editor_wait": 8,  # 正文 iframe(url 空)渲染慢，正文注入前多等几秒
         "save_selectors": ["button:has-text('存草稿')", "*:text-is('存草稿')", "*:has-text('存草稿')", "*:has-text('保存草稿')"],
         "auto_save": False,
         "save_ok_selectors": ["*:has-text('已保存')", "*:has-text('保存成功')", "*:has-text('保存于')"],
+        # 封面流程（2026-07-14 二次真机重校准）：封面区在正文下方，需先滚动到「设置封面」；
+        #   单图默认选中 → 悬浮封面缩略图出现「更换」→ 点开图片弹窗（tab「正文/本地上传」默认激活，
+        #   有「点击本地上传」区 + input[accept=image/*]，自动裁 3:2）→ set_input_files → 「确定」。
+        # 关键教训：绝不回退 input[type=file]（那是页面的视频上传框，喂图会弹"视频格式不正确"）；
+        #          open 必须点「更换」，旧的「选择封面」文字不存在，导致整条流程从未真正打开弹窗。
+        "cover": {
+            "scroll_into": ["label:has-text('设置封面')", "*:text-is('设置封面')"],
+            "pre_click": ["label.cheetah-radio-wrapper:has-text('单图')"],
+            "hover": ["span.form-item-cover", "div.cheetah-form-item:has-text('设置封面')"],  # 悬浮露出「更换」overlay
+            # 封面两种态：①空封面→框里直接是「选择封面」；②已有封面→hover 缩略图冒出「更换」。两者都点，
+            # 靠 set_cover 的「验证弹窗真开」筛出有效那个（点中不开弹窗=假成功，会被 _modal_open 挡掉）。
+            "open": ["text=选择封面", "text=更换", "text=编辑"],
+            "post_open_click": ["text=点击本地上传"],  # 激活本地上传 tab（若 input 未现）
+            "file_input": ["input[accept*='image']"],  # 只认图片 input，绝不 input[type=file]
+            "confirm": ["div.cheetah-modal-footer button.cheetah-btn-primary",
+                        "button.cheetah-btn-primary:has-text('确定')",
+                        "button.cheetah-btn-primary:has-text('确认')"],
+            "upload_wait": 3.5,
+        },
     },
     "douyin": {
         # 2026-07 实测：抖音图文标题 input.semi-input[placeholder=添加作品标题]，正文
@@ -213,12 +439,22 @@ PLATFORMS = {
         "profile": _profile("douyin"),
         "login_url_patterns": ["creator.douyin.com/login", "/passport/", "sso.douyin.com"],
         "login_selectors": [".login-pannel", "div[class*='qrcode']", "img[src*='qrcode']"],
-        "title_selectors": ["input[placeholder*='标题']", "input.semi-input", "textarea[placeholder*='标题']"],
-        "editor_selectors": ["div.editor-kit-container[contenteditable=true]",
-                            "div[contenteditable=true][data-placeholder*='描述']", "div[contenteditable=true]"],
+        # 2026-07-14 真机 DOM 校准：标题 input.semi-input(添加作品标题)、正文 div.editor-kit-container[ce]、
+        # 封面独立区块 div.content-upload-kVVDpn「选择一张图片作为封面」。
+        "title_selectors": ["input.semi-input[placeholder*='标题']", "input[placeholder*='标题']", "input.semi-input"],
+        "editor_selectors": ["div.zone-container.editor-kit-container[contenteditable=true]",
+                            "div.editor-kit-container[contenteditable=true]",
+                            "div[contenteditable=true][data-placeholder*='描述']"],
         "save_selectors": [],  # 抖音图文无存草稿按钮：只填充，绝不点发布，留人工核对
         "auto_save": False,
         "save_ok_selectors": [],
+        # 2026-07-14 真机：抖音图文上传区无 input[type=file]（点击触发系统对话框），必须走 file_chooser；
+        # 图库首图默认即封面，无需再单独设封面。图不塞正文，正文只放「作品描述」文字。
+        "image_upload": {
+            "mode": "file_chooser",
+            "trigger": ["div.bold-KtUGPM:has-text('点击上传')", "text=点击上传",
+                        "div.preview-_mkRqT", "div.container-IRuUu2"],
+        },
     },
     # 下面两个平台已有更强的专用链路，不在这里重复实现
     "wechat": {
@@ -240,8 +476,11 @@ LOGIN_WAIT_SECS = 180   # 等扫码登录的上限
 MANUAL_HOLD_HINT = "浏览器窗口保持打开——填完/贴完后自己关窗口即可，脚本会等你。"
 
 
+_T0 = time.time()
+
+
 def _log(step, ok=True, **extra):
-    rec = {"step": step, "ok": ok}
+    rec = {"step": step, "ok": ok, "t": round(time.time() - _T0, 1)}
     rec.update(extra)
     print(json.dumps(rec, ensure_ascii=False), flush=True)
 
@@ -440,6 +679,17 @@ async (root, args) => {
     var dt = new DataTransfer();
     dt.items.add(file);
     root.focus();
+    // 关键修复：inject_body 的粘贴通道会把整段正文留在"选中"态（selectNodeContents）。
+    // 若此时直接贴图，image paste 会用图片**替换掉整段选中的正文**——用户就只看到图、没了正文。
+    // 先把光标收拢到正文开头（collapse 到 start），既不覆盖正文，图片又落在最前=天然封面。
+    try {
+      var sel = window.getSelection();
+      var range = document.createRange();
+      range.selectNodeContents(root);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (e) {}
     var ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
     root.dispatchEvent(ev);
     return true;
@@ -585,6 +835,17 @@ def paste_images(page, frame, el_sel, images):
     """逐张贴图：优先编辑器粘贴通道（File 进 DataTransfer），失败试 input[type=file]，
     再失败就提示手动。返回 (pasted, hints)。"""
     pasted, hints = [], []
+    # 关键：inject_body 走 selectNodeContents 把整段正文留在"选中"态，且 ProseMirror/Draft 维护自己的
+    # 选区模型（无视 JS 层 window.getSelection 的收拢）。必须用**真实光标移动**把选区收拢到正文开头，
+    # 否则接下来的合成贴图会用图片替换掉整段选中的正文（现象=只剩图、正文全没）。图落最前=天然封面。
+    try:
+        el0 = frame.query_selector(el_sel)
+        if el0:
+            el0.click()
+            page.keyboard.press("Control+Home")
+            time.sleep(0.3)
+    except Exception:
+        pass
     for img in images:
         img = img.strip()
         if not img:
@@ -622,6 +883,158 @@ def paste_images(page, frame, el_sel, images):
             hints.append("图片未能自动贴入，请手动拖进编辑器: %s" % img)
             _log("image_manual", ok=False, path=img)
     return pasted, hints
+
+
+def set_cover(page, cfg, cover_path):
+    """按平台 cover 配置设置封面（区别于往正文塞图）：可选 pre_click(如「单图」) →
+    open(打开封面弹窗) → 把文件喂给 input[accept=image]（隐藏 input 也能 set_input_files）→
+    confirm(确定/完成)。全程 best-effort，任何一步失败都不抛异常，窗口保持供人工核对。
+    返回 (ok, note)。"""
+    cc = cfg.get("cover")
+    if not cc:
+        return False, "本平台未配置封面流程"
+    if not cover_path or not os.path.isfile(cover_path):
+        return False, "封面图不存在: %s" % cover_path
+    try:
+        # 封面区常在正文下方——先把「设置封面」滚进视口，否则 open/更换 都点不到（元素在 DOM 但离屏）
+        for sel in cc.get("scroll_into", []):
+            try:
+                page.locator(sel).first.scroll_into_view_if_needed(timeout=3000)
+                time.sleep(0.6)
+                break
+            except Exception:
+                pass
+        for sel in cc.get("pre_click", []):
+            try:
+                page.click(sel, timeout=3000)
+                time.sleep(0.6)
+            except Exception:
+                pass
+        # 「更换」是 hover 封面缩略图才冒出来的 overlay；且点「标签 span」这类元素虽能点中却不开弹窗
+        # （假成功）。故：先 hover 缩略图露出 overlay → 点 open 选择器 → **验证弹窗真开了**（图片 input
+        # 或「点击本地上传」出现）才算 opened，否则继续试下一个。整段最多重试 3 轮，根治偶发点空。
+        file_sels = cc.get("file_input", ["input[accept*='image']"])
+
+        def _modal_open():
+            _, e, _ = _find_in_frames(page, file_sels)
+            if e:
+                return True
+            try:
+                return page.locator("text=点击本地上传").count() > 0
+            except Exception:
+                return False
+
+        def _hover_thumb():
+            # 优先 hover 已配置的缩略图选择器；都不行就按「设置封面」标签下方 ~110px 坐标 hover
+            for hsel in cc.get("hover", []):
+                try:
+                    page.hover(hsel, timeout=1500)
+                    time.sleep(0.4)
+                    return
+                except Exception:
+                    pass
+            for rsel in cc.get("scroll_into", []):
+                try:
+                    bb = page.locator(rsel).first.bounding_box()
+                    if bb:
+                        page.mouse.move(bb["x"] + 90, bb["y"] + 110)
+                        time.sleep(0.4)
+                        return
+                except Exception:
+                    pass
+
+        opened = False
+        for _ in range(3):
+            if _modal_open():
+                opened = True
+                break
+            _hover_thumb()
+            for sel in cc.get("open", []):
+                try:
+                    page.click(sel, timeout=2500)
+                    time.sleep(1.5)
+                    if _modal_open():
+                        opened = True
+                        break
+                except Exception:
+                    pass
+            if opened:
+                break
+            time.sleep(0.6)
+        if not opened:
+            return False, "没能打开封面弹窗（hover+「更换」重试 3 轮仍未见图片上传区，结构可能又变了）"
+        # 弹窗可能默认停在别的 tab——若图片 input 还没出现，点「点击本地上传」激活本地上传区
+        for sel in cc.get("post_open_click", []):
+            try:
+                pre_fr, pre_el, _ = _find_in_frames(page, file_sels)
+                if pre_el:
+                    break
+                page.click(sel, timeout=2500)
+                time.sleep(1.0)
+            except Exception:
+                pass
+        # 找图片 file input（只认 accept=image，绝不回退 input[type=file]=视频框）
+        ffr, fel, fsel = _find_in_frames(page, file_sels)
+        if not fel:
+            return False, "没找到封面图片 input[accept=image]（弹窗未开或结构变了）"
+        try:
+            fel.set_input_files(cover_path)
+        except Exception as e:
+            return False, "喂图失败: %s" % str(e)[:60]
+        # 轮询「确定」按钮出现且可点就立即点（上传/裁剪是异步的，盲等要么白等要么点到禁用键）。
+        # 最多等 12s；点成功即弹窗关闭，后续存草稿才不会被弹窗挡住。
+        time.sleep(min(1.5, cc.get("upload_wait", 3.0)))  # 给上传一点起步时间
+        confirmed = False
+        deadline = time.time() + 12
+        confirm_sels = cc.get("confirm", [])
+        while time.time() < deadline and not confirmed:
+            for sel in confirm_sels:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() and btn.is_enabled(timeout=600):
+                        btn.click(timeout=2000)
+                        confirmed = True
+                        break
+                except Exception:
+                    pass
+            if not confirmed:
+                time.sleep(0.5)
+        time.sleep(0.8)
+        return True, ("封面已上传并点确认" if confirmed else "封面已喂入，但未点到确认键，请在窗口里手动点「确定」")
+    except Exception as e:
+        return False, "封面流程异常: %s" % str(e)[:80]
+
+
+def upload_via_file_chooser(page, triggers, images):
+    """图库型平台（抖音图文等）：上传区是「点击触发系统文件对话框」，DOM 里没有 input[type=file]，
+    必须用 Playwright expect_file_chooser 捕获。逐张上传，返回 (done, hints)。
+    这类平台第一张图库图通常即默认封面，无需再单独设封面。"""
+    done, hints = [], []
+    for img in images:
+        img = img.strip()
+        if not img:
+            continue
+        if not os.path.isfile(img):
+            hints.append("图不存在: %s" % img)
+            continue
+        ok = False
+        for trig in triggers:
+            try:
+                with page.expect_file_chooser(timeout=6000) as fc:
+                    page.click(trig, timeout=4000)
+                fc.value.set_files(img)
+                time.sleep(3.0)  # 等上传
+                ok = True
+                _log("gallery_uploaded", path=img, via=trig)
+                break
+            except Exception:
+                continue
+        if ok:
+            done.append(img)
+        else:
+            hints.append("图库上传失败（请手动把图拖入上传区）: %s" % img)
+            _log("gallery_upload_fail", ok=False, path=img)
+    return done, hints
 
 
 def save_draft(page, cfg):
@@ -665,14 +1078,38 @@ def _wait_any(page, selectors, seconds):
     return False
 
 
-# 批量/AI 模式：--close-after 时存完草稿即关窗退出，便于同一 profile 连续发多篇
-# （默认 True=保持窗口，供人工核对；置 False=自动收尾）
+# 批量/AI 模式：--close-after 时存完草稿即收尾退出，便于同一账号连续发多篇
+# （默认 True=保持窗口，供人工预览核对；置 False=自动收尾）
 HOLD_WINDOW = True
 
 
 def hold_window(ctx):
-    """窗口保持到用户自己关（manual / 降级辅助模式的收尾）。
-    --close-after 模式下不等待，直接收尾关闭，让批量投递能顺序释放 profile 锁。"""
+    """收尾三态（草稿已入库/剪贴板已备好之后才会走到这里）：
+      ① CDP（缺省引擎）：Chrome 是独立进程——**只断开连接、立即退出**，窗口留在原地供用户
+         预览草稿、核对配图、亲手点发布；脚本被上游超时硬杀也不影响窗口。
+         --close-after 时只关本次投递开的那个标签页（绝不动用户其它标签），Chrome 常驻，
+         下一篇直接接管，免重启免 profile 锁。
+      ② 非 CDP 回退引擎 + 保窗：浏览器是脚本子进程，进程必须活着陪窗口——轮询到用户
+         把页面全关掉才收尾（老行为，需要上游给足超时）。
+      ③ 非 CDP + --close-after：直接关浏览器退出。"""
+    if getattr(ctx, "_cdp", False):
+        if not HOLD_WINDOW:
+            page = getattr(ctx, "_polaris_page", None)
+            if page:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+        pw = getattr(ctx, "_pw", None)
+        if pw:
+            try:
+                pw.stop()          # 只断 CDP；Chrome 独立进程，继续活着
+            except Exception:
+                pass
+        if HOLD_WINDOW:
+            print("[投递] 已断开 CDP —— 浏览器窗口保持打开（独立进程，脚本退出/被超时杀掉"
+                  "都不影响），请在窗口里预览草稿、核对配图与封面，确认后自行发布。", flush=True)
+        return
     if not HOLD_WINDOW:
         try:
             ctx.close()
@@ -685,7 +1122,8 @@ def hold_window(ctx):
             except Exception:
                 pass
         return
-    print("[投递] %s" % MANUAL_HOLD_HINT, flush=True)
+    print("[投递] %s（当前引擎 %s 非 CDP：浏览器随脚本进程存活，"
+          "请别在窗口核对完之前杀掉本脚本）" % (MANUAL_HOLD_HINT, BROWSER_ENGINE), flush=True)
     try:
         while True:
             pages = list(getattr(ctx, "pages", []) or [])
@@ -718,6 +1156,27 @@ def clipboard_assist(title, text):
 
 
 # ───────────────────────── 主流程 ─────────────────────────
+def _await_ready(page, cfg):
+    """自适应等待编辑器就绪：标题框或正文编辑器一旦在任一 frame 出现就立即返回，
+    最多等 editor_wait 秒。取代固定盲等——页面快时秒过，慢时(如百家号 iframe)才多等。"""
+    time.sleep(0.8)  # 给首帧一点渲染时间
+    deadline = time.time() + cfg.get("editor_wait", 4)
+    sels = list(cfg.get("editor_selectors", [])) + list(cfg.get("title_selectors", []))
+    if not sels:
+        time.sleep(cfg.get("editor_wait", 4) - 0.8)
+        return False
+    while time.time() < deadline:
+        try:
+            fr, el, _ = _find_in_frames(page, sels)
+            if el:
+                time.sleep(0.4)  # 命中后再稳定一下
+                return True
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return False
+
+
 def run(platform, title, content_file, images, manual):
     cfg = PLATFORMS.get(platform)
     if not cfg:
@@ -742,22 +1201,15 @@ def run(platform, title, content_file, images, manual):
             return 1
     text = _plain_text(html) if html else ""
 
-    # 开浏览器（持久 profile，登录态常驻）
-    profile = cfg["profile"]
-    os.makedirs(profile, exist_ok=True)
+    # 开浏览器 + 打开编辑页（多引擎自动回退：本地 Chrome 崩溃/超时 → CloakBrowser；导航自带重试）
     try:
-        ctx = launch_persistent_context(user_data_dir=profile, headless=False, humanize=True)
+        ctx, page = open_editor(cfg)
     except Exception as e:
-        _final("failed", "浏览器启动失败（%s）: %s" % (BROWSER_ENGINE, e))
+        _final("failed", "打开编辑页失败（所有引擎耗尽）: %s" % str(e).splitlines()[0][:120])
         return 1
-    _log("browser_launched", engine=BROWSER_ENGINE, profile=profile)
 
-    page = None
     try:
-        page = ctx.new_page() if hasattr(ctx, "new_page") else ctx.pages[0]
-        page.goto(cfg["draft_url"], wait_until="domcontentloaded")
-        time.sleep(4)  # 富编辑器初始化
-        _log("page_opened", url=page.url)
+        _await_ready(page, cfg)  # 自适应等待编辑器就绪（快则秒过，慢则最多 editor_wait 秒）
 
         # 登录检测（manual 模式也做——没登录连手贴都贴不了）
         if _looks_logged_out(page, cfg):
@@ -797,7 +1249,14 @@ def run(platform, title, content_file, images, manual):
         title_ok = fill_title(page, cfg, title)
         _log("title_filled", ok=title_ok, title=title)
 
+        # 正文编辑器可能比标题晚挂载（如头条 ProseMirror）——_await_ready 见到标题就返回了，
+        # 这里对编辑器再轮询重试，避免"标题在、编辑器还没好"时误判后台改版而降级手动。
         fr, el, el_sel = _find_in_frames(page, cfg["editor_selectors"])
+        if not el:
+            deadline = time.time() + 8
+            while time.time() < deadline and not el:
+                time.sleep(0.6)
+                fr, el, el_sel = _find_in_frames(page, cfg["editor_selectors"])
         if not el:
             raise RuntimeError("没找到正文编辑器（选择器全部落空，可能后台改版）")
 
@@ -808,7 +1267,24 @@ def run(platform, title, content_file, images, manual):
 
         img_hints = []
         if images:
-            pasted, img_hints = paste_images(page, fr, el_sel, images)
+            if cfg.get("image_upload"):
+                # 图库型平台（抖音图文）：图走图库上传(file_chooser)，不塞正文；首图默认即封面。
+                gdone, ghints = upload_via_file_chooser(page, cfg["image_upload"]["trigger"], images)
+                img_hints += ghints
+                if gdone:
+                    img_hints.append("已上传 %d 张到图库（首图默认封面）" % len(gdone))
+            elif cfg.get("cover"):
+                # 有专门封面流程的平台：第一张图走「设置封面」，其余(若有)才塞进正文。
+                cov_ok, cov_note = set_cover(page, cfg, images[0])
+                _log("cover_set", ok=cov_ok, note=cov_note, path=images[0])
+                img_hints.append(("封面：" + cov_note) if not cov_ok else "封面已设置")
+                if images[1:]:
+                    _, more_hints = paste_images(page, fr, el_sel, images[1:])
+                    img_hints += more_hints
+            else:
+                # 没有封面/图库流程的平台：维持原逻辑——全部塞进正文。
+                _, more_hints = paste_images(page, fr, el_sel, images)
+                img_hints += more_hints
 
         clicked, confirmed = save_draft(page, cfg)
         _log("draft_saved", ok=clicked, confirmed=confirmed)
@@ -837,7 +1313,8 @@ def run(platform, title, content_file, images, manual):
         _final("draft_uploaded", detail, platform=platform, method=method,
                title_filled=title_ok, title_clipboard=title_clip,
                save_clicked=clicked, save_confirmed=confirmed)
-        # 结果 JSON 已输出（上游可解析）；窗口保持到用户自己关——草稿已入库，关早关晚都安全
+        # 结果 JSON 已输出（上游可解析）。CDP 模式：断连即退，窗口独立常驻供预览；
+        # 非 CDP 回退：老行为，进程陪窗口等用户关。
         hold_window(ctx)
         return 0
 
@@ -871,7 +1348,8 @@ def main():
     ap.add_argument("--manual", action="store_true",
                     help="手动辅助模式：只开编辑页+标题正文进剪贴板，不自动填充")
     ap.add_argument("--close-after", action="store_true",
-                    help="存完草稿即关窗退出（批量/AI 模式，便于同一账号连续发多篇）")
+                    help="存完草稿即收尾退出（批量/AI 模式）：CDP 引擎只关本次标签页、"
+                         "Chrome 常驻给下一篇复用；非 CDP 引擎整个关掉")
     args = ap.parse_args()
 
     try:
