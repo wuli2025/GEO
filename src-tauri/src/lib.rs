@@ -1,5 +1,6 @@
 // ── 引擎模块（桌面 + Docker 两种外壳共用同一份源码）──
 pub mod accounts;
+pub mod evolution;
 pub mod mediaops;
 // 多人协作已抽为独立 crate(polaris-collab);壳件留本仓:
 // apihub=应用数据面分发(认识全部引擎), hosting=桌面一键当主机拼装。
@@ -231,6 +232,16 @@ pub fn run() {
             mediaops::mediaops_settings_set,
             mediaops::mediaops_metric_add,
             mediaops::mediaops_metrics_summary,
+            // 循环工程（M10 大脑·进化）：insight 卡 / 进化时间线 / prompt 版本树 / 飞轮
+            evolution::evolution_state,
+            evolution::insight_add,
+            evolution::insight_update,
+            evolution::insight_delete,
+            evolution::evolution_add,
+            evolution::evolution_decide,
+            evolution::prompt_version_add,
+            evolution::prompt_version_rollback,
+            evolution::flywheel_summary,
             // Sandbox (板块⑤ 已抽离为 polaris-sandbox crate, 命令名不变)
             polaris_sandbox::commands::sandbox_status,
             polaris_sandbox::commands::sandbox_build_image,
