@@ -51,7 +51,9 @@ const UsageBoard = defineAsyncComponent(() => import("./components/UsageBoard.vu
 const UpdatePanel = defineAsyncComponent(() => import("./components/UpdatePanel.vue"));
 const FeishuSettings = defineAsyncComponent(() => import("./components/FeishuSettings.vue"));
 const VideoCourseStudio = defineAsyncComponent(() => import("./components/VideoCourseStudio.vue"));
-const MediaOps = defineAsyncComponent(() => import("./components/MediaOpsCenter.vue"));
+// 自媒体运营中心已重构为 GeoOpsCenter（设计稿 v2 深色控制台）。
+// MediaOpsCenter.vue 保留在仓库中不删，仅不再引用。
+const GeoOpsCenter = defineAsyncComponent(() => import("./components/GeoOpsCenter.vue"));
 const MediaDashboard = defineAsyncComponent(() => import("./components/MediaDashboard.vue"));
 const DeckStudio = defineAsyncComponent(() => import("./components/DeckStudio.vue"));
 const WebStudio = defineAsyncComponent(() => import("./components/WebStudio.vue"));
@@ -366,7 +368,7 @@ function startSbDrag(e: MouseEvent) {
            绝不让异常冒泡到 app 根白屏 → 侧栏/任务中心/右抽屉及其它功能键照常可用。
            viewKey 让它感知视图切换并在切走时自愈(再切回=自动重试)。 -->
       <FaultBoundary :view-key="mountedView">
-      <KeepAlive :include="['KnowledgeGraph', 'SandboxStatus', 'DeckStudio', 'WebStudio', 'MediaOps', 'VideoCourseStudio']">
+      <KeepAlive :include="['KnowledgeGraph', 'SandboxStatus', 'DeckStudio', 'WebStudio', 'GeoOpsCenter', 'VideoCourseStudio']">
         <ChatPanel v-if="mountedView === 'chat'" />
         <WikiBrowse v-else-if="mountedView === 'wiki'" />
         <FileCenter v-else-if="mountedView === 'file_center'" />
@@ -388,7 +390,7 @@ function startSbDrag(e: MouseEvent) {
         <SenseApi v-else-if="mountedView === 'sense_api'" />
         <VoiceSettings v-else-if="mountedView === 'voice_input'" />
         <VideoCourseStudio v-else-if="mountedView === 'video_course'" />
-        <MediaOps v-else-if="mountedView === 'media_ops'" />
+        <GeoOpsCenter v-else-if="mountedView === 'media_ops'" />
         <MediaDashboard v-else-if="mountedView === 'media_dashboard'" />
         <DeckStudio v-else-if="mountedView === 'deck'" />
         <WebStudio v-else-if="mountedView === 'web_studio'" />
