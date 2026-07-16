@@ -61,6 +61,12 @@ try:
     from cloakbrowser import launch_persistent_context as _cloak_launch  # type: ignore
 except Exception:
     _cloak_launch = None
+# 采集落盘：投递时能拿到草稿状态/回执，顺手落 metrics 备份。导入失败也不影响投递主流程。
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import data_store as _data_store  # type: ignore
+except Exception:
+    _data_store = None
 
 BROWSER_ENGINE = "local-chrome"
 
@@ -489,6 +495,20 @@ def _final(result, detail="", **extra):
     rec = {"result": result, "detail": detail}
     rec.update(extra)
     print(json.dumps(rec, ensure_ascii=False), flush=True)
+
+
+def _collect_metric(**fields):
+    """把一条投递侧采集数据（草稿状态/回执/平台/标题等）落盘到 data_store 的 metrics 类别。
+    **最小侵入 + 失败静默降级**：data_store 缺失或落盘出错都只打一行日志，绝不影响投递主流程。"""
+    if _data_store is None:
+        return
+    try:
+        rec = {"source": "draft_uploader", "engine": BROWSER_ENGINE}
+        rec.update(fields)
+        _data_store.save_record("metrics", rec)
+        _log("metric_saved", ok=True, category="metrics")
+    except Exception as e:
+        _log("metric_save_failed", ok=False, error=str(e).splitlines()[0][:120])
 
 
 # ───────────────────────── markdown → 简单语义 HTML（零依赖，够粘贴用）─────────────────────────
@@ -1313,6 +1333,11 @@ def run(platform, title, content_file, images, manual):
         _final("draft_uploaded", detail, platform=platform, method=method,
                title_filled=title_ok, title_clipboard=title_clip,
                save_clicked=clicked, save_confirmed=confirmed)
+        # 采集点：投递刚拿到草稿状态/回执，落一条 metrics 备份（失败静默，不影响下方保窗收尾）
+        _collect_metric(result="draft_uploaded", platform=platform, title=title,
+                        method=method, chars=landed, title_filled=title_ok,
+                        save_clicked=clicked, save_confirmed=confirmed,
+                        images=len(images) if images else 0)
         # 结果 JSON 已输出（上游可解析）。CDP 模式：断连即退，窗口独立常驻供预览；
         # 非 CDP 回退：老行为，进程陪窗口等用户关。
         hold_window(ctx)

@@ -91,6 +91,46 @@ python ~/PolarisGEO/skills/media-publisher/scripts/ark_image.py \
 - 默认 key 是粉丝福利，对应账号**须在方舟控制台开通生图模型服务**才能出图；报
   `ModelNotOpen` 时提示用户去 https://console.volcengine.com/ark 开通，或在设置里换自己的 key。
 
+## 数据落盘与备份 data_store.py / collect_backup.py
+
+自媒体采集链路（选题雷达抓的热榜/爆文、投递时顺带拿到的草稿状态/回执/阅读数）过去
+「拿到即丢」。`data_store.py` 给整条链路补上**统一落盘 + 滚动备份 + 崩溃可恢复**，
+`draft_uploader.py` 已在存草稿成功点自动落一条 `metrics`（失败静默降级，绝不拖累投递）。
+
+**目录结构**（都在 `~/PolarisGEO/data/` 下，跨平台）：
+
+```
+~/PolarisGEO/data/
+├─ collect/                       采集主库（真身，按类别分目录、按天一个 jsonl）
+│   ├─ metrics/2026-07-17.jsonl      投递回执 / 草稿状态 / 阅读数
+│   ├─ hot_topics/2026-07-17.jsonl   选题雷达抓的热榜 / 爆文
+│   ├─ competitor/2026-07-17.jsonl   对标账号数据
+│   └─ probe/2026-07-17.jsonl        探针 / 其它
+├─ backups/
+│   ├─ 20260717-142530.zip           全量快照（backup() 产出，滚动保留最近 30 份）
+│   └─ daily/2026-07-17.zip          当日增量备份（save_record 顺手做，同日覆盖一份）
+└─ logs/data_store.log               本模块日志
+```
+
+**编程接口**（`import data_store as ds`）：
+
+- `ds.save_record(category, record: dict)` — 一条采集记录**原子行级追加**进当日 jsonl，写完顺手做当日增量备份。
+- `ds.backup()` — 全量快照成 zip，滚动保留最近 30 份，超出删最旧。
+- `ds.restore(timestamp)` — 从某份备份恢复 collect（恢复前自动安全快照）。`ds.list_backups()` / `ds.verify_collect()`。
+- `ds.fetch_with_retry(fn, retries=3, backoff=1.5)`（或 `@ds.with_retry(...)` 装饰器）— 网络请求指数退避重试，采集更稳。
+
+**CLI collect_backup.py**（Windows / UTF-8 可跑）：
+
+```bash
+python ~/PolarisGEO/skills/media-publisher/scripts/collect_backup.py backup            # 立即全量快照 + 滚动清理
+python ~/PolarisGEO/skills/media-publisher/scripts/collect_backup.py list              # 列出现有备份（全量+当日增量）
+python ~/PolarisGEO/skills/media-publisher/scripts/collect_backup.py verify            # 校验所有 jsonl 每行可解析并统计条数
+python ~/PolarisGEO/skills/media-publisher/scripts/collect_backup.py restore 20260717-142530   # 从某份备份恢复
+python ~/PolarisGEO/skills/media-publisher/scripts/collect_backup.py demo-save --category metrics --count 3  # 写假数据自测
+```
+
+选题雷达等采集环节**必须**把结果经 `save_record` 落盘（见 hot-topic-radar 技能），不落盘等于没采。
+
 ## 工作流程（你要做的事）
 
 1. 确认稿件三件套：标题、正文文件绝对路径（.md/.html）、配图路径（可选，没有可先用
