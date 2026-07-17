@@ -240,6 +240,8 @@ pub fn run() {
             media_engine::media_job_status,
             media_engine::media_job_list,
             media_engine::media_job_cancel,
+            media_engine::media_job_log,
+            media_engine::media_job_article,
             // 循环工程（M10 大脑·进化）：insight 卡 / 进化时间线 / prompt 版本树 / 飞轮
             evolution::evolution_state,
             evolution::insight_add,

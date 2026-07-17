@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { vEngineHtml } from "./render";
 import { mediaJob, type MediaJob } from "../../tauri";
+import { openJobDetail, openJobId } from "./jobsBus";
 const props = defineProps<{ sub: string; platform: string }>();
 const html = computed(() => vEngineHtml(props.sub));
 
@@ -42,7 +43,8 @@ async function start() {
   busy.value = true; msg.value = "";
   try {
     const j = await mediaJob.start({ platform: platformSel.value, title: title.value, topic: topic.value, stages });
-    msg.value = `job ${j.id} 已启动（日志：${j.logPath}）`;
+    msg.value = `job ${j.id} 已启动`;
+    openJobDetail(j.id); // 启动即打开生成流程详情，全程看着它跑
     await refreshJobs();
   } catch (e) { msg.value = String(e); } finally { busy.value = false; }
 }
@@ -55,6 +57,8 @@ const STATUS_DOT: Record<string, string> = { running: "warn", pending: "idle", d
 
 onMounted(refreshJobs);
 onBeforeUnmount(() => { if (timer) clearInterval(timer); });
+// 详情抽屉里可能取消/重跑了 job——关抽屉时把列表刷成最新
+watch(openJobId, (v) => { if (!v) refreshJobs(); });
 </script>
 <template>
   <div>
@@ -77,15 +81,17 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
       <p v-if="msg" style="margin-top:6px;font-size:13px;color:var(--dim)">{{ msg }}</p>
       <div v-if="jobs.length" class="tbl-wrap" style="margin-top:10px">
         <table>
-          <tr><th>job</th><th>平台</th><th>标题</th><th>阶段</th><th>状态</th><th>产物/日志</th><th></th></tr>
-          <tr v-for="j in jobs" :key="j.id">
+          <tr><th>job</th><th>平台</th><th>标题</th><th>阶段</th><th>状态</th><th></th></tr>
+          <tr v-for="j in jobs" :key="j.id" class="job-row" title="点击查看生成流程" @click="openJobDetail(j.id)">
             <td style="font-variant-numeric:tabular-nums">{{ j.id.slice(0, 8) }}</td>
             <td>{{ j.platform }}</td>
             <td>{{ j.title }}</td>
             <td>{{ j.stage || j.stages.join("→") }}</td>
             <td><span class="sline"><span class="sdot" :class="STATUS_DOT[j.status] || 'idle'"></span>{{ j.status }}</span><span v-if="j.error" style="color:var(--bad)">：{{ j.error }}</span></td>
-            <td style="font-size:12px;color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="(j.articlePath || '') + ' ' + j.logPath">{{ j.articlePath || j.logPath }}</td>
-            <td><button v-if="j.status === 'running' || j.status === 'pending'" class="btn sm danger" @click="cancel(j.id)">取消</button></td>
+            <td style="white-space:nowrap">
+              <button class="btn sm ghost" @click.stop="openJobDetail(j.id)">生成流程</button>
+              <button v-if="j.status === 'running' || j.status === 'pending'" class="btn sm danger" style="margin-left:6px" @click.stop="cancel(j.id)">取消</button>
+            </td>
           </tr>
         </table>
       </div>
@@ -104,4 +110,6 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
   font-family: inherit;
 }
 .geo-input:focus-visible { outline: 2px solid var(--focus, #8fa6ff); outline-offset: 1px; }
+.job-row { cursor: pointer; }
+.job-row:hover td { background: rgba(255, 255, 255, 0.03); }
 </style>

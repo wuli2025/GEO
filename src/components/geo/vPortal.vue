@@ -10,11 +10,12 @@ import {
 } from "./render";
 import { P, MOCK, sdot } from "./data";
 import {
-  mediaOps, mediaAccounts, MEDIA_PLATFORMS,
-  type MediaTopic, type MediaQueueItem, type MediaPlatformSettings, type MediaAccountStatus, type MediaPlatform,
+  mediaOps, mediaAccounts, mediaJob, MEDIA_PLATFORMS,
+  type MediaTopic, type MediaQueueItem, type MediaPlatformSettings, type MediaAccountStatus, type MediaPlatform, type MediaJob,
 } from "../../tauri";
 import { toast } from "../../composables/useToast";
 import ExpertPromptDrawer from "./ExpertPromptDrawer.vue";
+import { openJobDetail, openJobId } from "./jobsBus";
 
 const props = defineProps<{ sub: string; platform: string }>();
 
@@ -50,8 +51,55 @@ async function loadState() {
 async function loadAccts() {
   try { accts.value = await mediaAccounts.status(); } catch { accts.value = []; }
 }
-onMounted(() => { loadState(); loadAccts(); });
-watch(() => props.platform, () => { loadState(); newTopic.value = { title: "", angle: "", keywords: "" }; });
+async function loadJobs() {
+  try { jobs.value = await mediaJob.list(); } catch { jobs.value = []; }
+}
+onMounted(() => { loadState(); loadAccts(); loadJobs(); });
+watch(() => props.platform, () => { loadState(); loadJobs(); newTopic.value = { title: "", angle: "", keywords: "" }; });
+// 详情抽屉里可能取消/重跑——关抽屉时刷新队列与 job 映射
+watch(openJobId, (v) => { if (!v) { loadState(); loadJobs(); } });
+
+// ── 流程打通：选题 → 队列 → 流水线 job → 点进生成流程 ──
+const jobs = ref<MediaJob[]>([]);
+/** 每个队列项对应的最新 job（详情入口） */
+const jobByQueue = computed(() => {
+  const m: Record<string, MediaJob> = {};
+  for (const j of [...jobs.value].sort((a, b) => a.createdAt - b.createdAt)) {
+    if (j.queueId) m[j.queueId] = j;
+  }
+  return m;
+});
+const producing = ref<string | null>(null); // 正在排产/启动的 topic 或 queue id
+
+/** 选题一键排产：入队 → 标记 picked → 启动全链路 job → 打开生成流程 */
+async function produceTopic(t: MediaTopic) {
+  if (producing.value) return;
+  producing.value = t.id;
+  try {
+    const q = await mediaOps.queueAdd(plat.value, t.title, t.id);
+    await mediaOps.topicUpdate(t.id, { status: "picked" }).catch(() => {});
+    const j = await mediaJob.start({ queueId: q.id, topic: t.angle || undefined });
+    toast.success(`已排产并启动流水线（job ${j.id.slice(0, 8)}）`);
+    openJobDetail(j.id);
+    await loadState(); await loadJobs();
+  } catch (e: any) {
+    toast.error(e?.message ?? String(e));
+  } finally { producing.value = null; }
+}
+
+/** 队列项手动跑一条全链路 job */
+async function runQueueItem(q: MediaQueueItem) {
+  if (producing.value) return;
+  producing.value = q.id;
+  try {
+    const j = await mediaJob.start({ queueId: q.id });
+    toast.success(`流水线已启动（job ${j.id.slice(0, 8)}）`);
+    openJobDetail(j.id);
+    await loadState(); await loadJobs();
+  } catch (e: any) {
+    toast.error(e?.message ?? String(e));
+  } finally { producing.value = null; }
+}
 
 const platSettings = computed(() =>
   settings.value.find((s) => s.platform === plat.value)
@@ -159,7 +207,12 @@ function onClick(e: MouseEvent) {
                 <td>{{ t.angle || "—" }}</td>
                 <td>{{ (t.keywords || []).join("、") || "—" }}</td>
                 <td>{{ t.status }}</td>
-                <td style="white-space: nowrap"><button class="btn sm danger" @click="delTopic(t.id)">删除</button></td>
+                <td style="white-space: nowrap">
+                  <button class="btn sm" :disabled="!!producing" title="入队并启动 生成→排版→投递 全链路，随后自动打开生成流程" @click="produceTopic(t)">
+                    <span v-if="producing === t.id" class="spin" style="margin-right: 4px">◔</span>生成→投递
+                  </button>
+                  <button class="btn sm danger" style="margin-left: 6px" @click="delTopic(t.id)">删除</button>
+                </td>
               </tr>
             </table>
           </div>
@@ -186,12 +239,20 @@ function onClick(e: MouseEvent) {
       <section>
         <div class="card">
           <h3>{{ pname }}·规划队列（{{ queue.length }}）</h3>
-          <div v-if="!queue.length" class="foot">队列为空。生产任务会登记到这里。</div>
+          <div v-if="!queue.length" class="foot">队列为空。在选题池点「生成→投递」即可排产登记到这里。</div>
           <div v-else class="tbl-wrap">
             <table>
-              <tr><th>标题</th><th>状态</th><th>排期</th><th>备注</th></tr>
-              <tr v-for="q in queue" :key="q.id">
+              <tr><th>标题</th><th>状态</th><th>排期</th><th>备注</th><th>流程</th></tr>
+              <tr v-for="q in queue" :key="q.id" :style="jobByQueue[q.id] ? 'cursor:pointer' : ''" :title="jobByQueue[q.id] ? '点击查看生成流程' : ''" @click="jobByQueue[q.id] && openJobDetail(jobByQueue[q.id].id)">
                 <td><b>{{ q.title }}</b></td><td>{{ q.status }}</td><td>{{ q.scheduledAt || "—" }}</td><td>{{ q.note || "—" }}</td>
+                <td style="white-space: nowrap">
+                  <button v-if="jobByQueue[q.id]" class="btn sm ghost" @click.stop="openJobDetail(jobByQueue[q.id].id)">生成流程</button>
+                  <button
+                    v-if="!jobByQueue[q.id] || ['done', 'failed', 'canceled'].includes(jobByQueue[q.id].status)"
+                    class="btn sm" style="margin-left: 6px" :disabled="!!producing"
+                    :title="'启动 生成→排版→投递 全链路'" @click.stop="runQueueItem(q)"
+                  ><span v-if="producing === q.id" class="spin" style="margin-right: 4px">◔</span>▶ 跑流水线</button>
+                </td>
               </tr>
             </table>
           </div>

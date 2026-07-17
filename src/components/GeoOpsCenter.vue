@@ -15,6 +15,8 @@ import {
 import { chartTip } from "./geo/charts";
 import { toast } from "../composables/useToast";
 import { useAppStore } from "../stores/app";
+import { openJobId, openJobDetail, closeJobDetail } from "./geo/jobsBus";
+import JobDetailDrawer from "./geo/JobDetailDrawer.vue";
 
 import vDashboard from "./geo/vDashboard.vue";
 import vApprovals from "./geo/vApprovals.vue";
@@ -83,6 +85,13 @@ function chipTitle(p: (typeof PLATFORMS)[number]): string {
 // ── 事件委托（v-html 内容的导航 / 演示 toast） ──
 function onDelegate(e: MouseEvent) {
   const target = e.target as HTMLElement;
+  // 任意 v-html 内容里带 data-job 的元素 → 打开该条流程的生成详情
+  const jobEl = target.closest?.("[data-job]") as HTMLElement | null;
+  if (jobEl && jobEl.dataset.job) {
+    e.preventDefault();
+    openJobDetail(jobEl.dataset.job);
+    return;
+  }
   const navEl = target.closest?.("[data-go],[data-gosub]") as HTMLElement | null;
   if (navEl) {
     e.preventDefault();
@@ -206,5 +215,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     </div>
 
     <div class="geo-tip" ref="tip"></div>
+
+    <!-- 流程详情抽屉（全局挂壳层：仪表盘/引擎/门户任意入口都能点开） -->
+    <JobDetailDrawer
+      v-if="openJobId"
+      :job-id="openJobId"
+      @close="closeJobDetail()"
+      @rerun="(j) => openJobDetail(j.id)"
+    />
   </div>
 </template>

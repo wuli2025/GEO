@@ -11,7 +11,7 @@
 import { PLATFORMS, EXPERTS, MOCK, P, ico, sdot, esc } from "./data";
 import { stackedArea, lineChart, legend } from "./charts";
 import type { EvolutionData } from "../../composables/useEvolution";
-import type { MediaKpi } from "../../tauri";
+import type { MediaKpi, MediaJob } from "../../tauri";
 
 export function title(t: string, c: string): string {
   return `<h2 class="vtitle">${t}</h2><div class="vcrumb">${c}</div>`;
@@ -22,7 +22,7 @@ const lnk = (go: string, txt: string, sub?: string) =>
   `<a class="glnk" data-go="${go}"${sub ? ` data-gosub="${sub}"` : ""}>${txt}</a>`;
 
 /* ── 数据看板（M8 运营大屏） ─────────────────────────────────────────── */
-export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi): string {
+export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi, jobs: MediaJob[] = []): string {
   const k = kpi;
   let h = title("数据看板", "总控 / M8 运营大屏 —— 一屏回答：发了多少、多少人看、其中多少是 AI 带来的、系统这周进化了什么");
   if (sub === "kpi") {
@@ -36,10 +36,19 @@ export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi): st
       <div class="card stat"><h3>30 天 LLM 成本</h3><div class="num">${k.llmCost}</div><div class="sub">写作用便宜模型 / 评审用贵模型</div></div>
       <div class="card stat"><h3>待办</h3><div class="num">${k.pending}<small>待审</small></div><div class="sub">${sdot("warn", k.loginBad + " 个账号异常")} · ${lnk("approvals", "进队列 →")}</div></div>
     </div></section>
-    <section><h3>最近投递</h3><div class="card"><div class="tbl-wrap"><table>
-      <tr><th>时间</th><th>平台</th><th>标题</th><th>结果</th><th>保存回执</th><th>窗口</th></tr>` +
-      MOCK.recent.map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td><td>${sdot(r[5][0], r[5][1])}</td></tr>`).join("") +
-      `</table></div><p class="foot">「窗口」= 投递后浏览器状态：CDP 保窗下窗口独立于脚本进程常驻，供预览草稿、核对配图、亲手发布。</p></div></section>`;
+    <section><h3>最近投递${jobs.length ? "（真实流水线，点任意一条看生成流程）" : ""}</h3><div class="card"><div class="tbl-wrap"><table>` +
+      (jobs.length
+        ? `<tr><th>时间</th><th>平台</th><th>标题</th><th>阶段</th><th>状态</th></tr>` +
+          jobs.slice(0, 8).map((j) => {
+            const dot = { pending: "idle", running: "warn", done: "ok", failed: "bad", canceled: "idle" }[j.status] || "idle";
+            const d = new Date(j.updatedAt * 1000);
+            const p2 = (n: number) => String(n).padStart(2, "0");
+            const when = `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+            return `<tr data-job="${esc(j.id)}" style="cursor:pointer" title="点击查看生成流程"><td style="white-space:nowrap">${when}</td><td>${P(j.platform)?.name ?? esc(j.platform)}</td><td>${esc(j.title)}</td><td>${esc(j.stage || j.stages.join("→"))}</td><td>${sdot(dot, j.status)}</td></tr>`;
+          }).join("")
+        : `<tr><th>时间</th><th>平台</th><th>标题</th><th>结果</th><th>保存回执</th><th>窗口</th></tr>` +
+          MOCK.recent.map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td><td>${sdot(r[5][0], r[5][1])}</td></tr>`).join("")) +
+      `</table></div><p class="foot">${jobs.length ? "每条流程可点进：阶段时间线 + 实时日志 + 正文产物。历史 job 落盘保存，重启不丢。" : "「窗口」= 投递后浏览器状态：CDP 保窗下窗口独立于脚本进程常驻，供预览草稿、核对配图、亲手发布。（暂无真实投递记录，以上为设计稿示例）"}</p></div></section>`;
   }
   if (sub === "traffic") {
     h += `<section><div class="card"><h3>每日流量三层构成（近 14 天）</h3>

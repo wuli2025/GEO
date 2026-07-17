@@ -555,10 +555,16 @@ export const evolutionApi = {
 // ──────────────────────────────────────────────────────────────
 // 投递引擎 job（media_engine.rs）：生成→排版→上传全链路
 // ──────────────────────────────────────────────────────────────
+export interface MediaJobStep {
+  /** 稳定 key：阶段名或 "upload:title_filled" 这类脚本回执名 */
+  key: string; label: string;
+  status: "run" | "ok" | "fail" | "skip";
+  detail: string; at: number;
+}
 export interface MediaJob {
   id: string; queueId?: string; platform: string; title: string; topic: string;
   stages: string[]; status: "pending" | "running" | "done" | "failed" | "canceled";
-  stage: string; articlePath?: string; logPath: string; error?: string;
+  stage: string; steps: MediaJobStep[]; articlePath?: string; logPath: string; error?: string;
   createdAt: number; updatedAt: number;
 }
 export const mediaJob = {
@@ -567,6 +573,10 @@ export const mediaJob = {
   status: (jobId: string) => invoke<MediaJob>("media_job_status", { jobId }),
   list: () => invoke<MediaJob[]>("media_job_list"),
   cancel: (jobId: string) => invoke<void>("media_job_cancel", { jobId }),
+  /** job 日志尾部（详情视图实时回放生成流程） */
+  log: (jobId: string, tailLines?: number) => invoke<string>("media_job_log", { jobId, tailLines }),
+  /** 正文产物内容（.md / 公众号语义 .html） */
+  article: (jobId: string) => invoke<string>("media_job_article", { jobId }),
 };
 
 // ──────────────────────────────────────────────────────────────

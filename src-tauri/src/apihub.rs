@@ -1059,6 +1059,11 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
         "media_job_status" => ok(crate::media_engine::media_job_status(req_str(a, "jobId")?)?),
         "media_job_list" => ok(crate::media_engine::media_job_list()),
         "media_job_cancel" => ok(crate::media_engine::media_job_cancel(req_str(a, "jobId")?)?),
+        "media_job_log" => ok(crate::media_engine::media_job_log(
+            req_str(a, "jobId")?,
+            a.get("tailLines").and_then(|v| v.as_u64()).map(|v| v as usize),
+        )?),
+        "media_job_article" => ok(crate::media_engine::media_job_article(req_str(a, "jobId")?)?),
 
         // ── 火山方舟 API 中心（ark.rs）──
         "ark_config_get" => ok(ark::ark_config_get()?),

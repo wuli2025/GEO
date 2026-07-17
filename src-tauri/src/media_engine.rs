@@ -43,6 +43,23 @@ const GENERATE_TIMEOUT_SECS: u64 = 420;
 
 // ───────────────────────── 数据类型 ─────────────────────────
 
+/// 流程详情视图里的一格步骤（细粒度事件，按时间序追加）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobStep {
+    /// 稳定 key：粗粒度用阶段名（generate/typeset/upload），
+    /// upload 内的细步骤用 "upload:title_filled" 这类脚本回执 step 名。
+    pub key: String,
+    /// 人话标签（直接进 UI）。
+    pub label: String,
+    /// "run" | "ok" | "fail" | "skip"
+    pub status: String,
+    /// 补充说明（产物路径 / 字数 / 失败原因摘要…）。
+    #[serde(default)]
+    pub detail: String,
+    pub at: i64,
+}
+
 /// 一条投递流水线 job 的运行态快照（前端轮询用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +79,9 @@ pub struct MediaJob {
     /// 当前/最后所处阶段（空=未开跑）。
     #[serde(default)]
     pub stage: String,
+    /// 结构化步骤时间线（流程详情视图的数据源）。
+    #[serde(default)]
+    pub steps: Vec<JobStep>,
     /// 生成/排版产物路径（.md 或公众号 .html body）。
     #[serde(default)]
     pub article_path: Option<String>,
@@ -74,9 +94,62 @@ pub struct MediaJob {
     pub updated_at: i64,
 }
 
-// ───────────────────────── 进程内 job 注册表 ─────────────────────────
+// ───────────────────────── 进程内 job 注册表（落盘持久化，重启不丢历史） ─────────────────────────
 
-static JOBS: Lazy<Mutex<HashMap<String, MediaJob>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+/// 历史 job 快照文件：`~/PolarisGEO/logs/jobs/index.json`（原子写，保留最近 JOBS_KEEP 条）。
+const JOBS_KEEP: usize = 200;
+
+fn jobs_index_path() -> PathBuf {
+    home()
+        .join("PolarisGEO")
+        .join("logs")
+        .join("jobs")
+        .join("index.json")
+}
+
+/// 启动时回灌历史：上次进程里还在跑的 job 已随进程死掉，标成 failed 给个可读说明。
+fn load_jobs() -> HashMap<String, MediaJob> {
+    let mut map = HashMap::new();
+    let Ok(raw) = std::fs::read_to_string(jobs_index_path()) else {
+        return map;
+    };
+    let Ok(list) = serde_json::from_str::<Vec<MediaJob>>(&raw) else {
+        return map;
+    };
+    for mut j in list {
+        if j.status == "running" || j.status == "pending" {
+            j.status = "failed".to_string();
+            j.error = Some("应用重启中断（历史快照）".to_string());
+            for s in j.steps.iter_mut().filter(|s| s.status == "run") {
+                s.status = "fail".to_string();
+                if s.detail.is_empty() {
+                    s.detail = "应用重启中断".to_string();
+                }
+            }
+        }
+        map.insert(j.id.clone(), j);
+    }
+    map
+}
+
+/// 全量快照落盘（best-effort 原子写；job 量小，全量写够用）。持有 JOBS 锁时勿调用。
+fn save_jobs() {
+    let mut list: Vec<MediaJob> = JOBS.lock().values().cloned().collect();
+    list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    list.truncate(JOBS_KEEP);
+    let path = jobs_index_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(&list) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+static JOBS: Lazy<Mutex<HashMap<String, MediaJob>>> = Lazy::new(|| Mutex::new(load_jobs()));
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn home() -> PathBuf {
@@ -108,11 +181,35 @@ fn child_key(job_id: &str) -> String {
 }
 
 fn update_job<F: FnOnce(&mut MediaJob)>(job_id: &str, f: F) {
-    let mut jobs = JOBS.lock();
-    if let Some(j) = jobs.get_mut(job_id) {
-        f(j);
-        j.updated_at = now_secs();
+    {
+        let mut jobs = JOBS.lock();
+        if let Some(j) = jobs.get_mut(job_id) {
+            f(j);
+            j.updated_at = now_secs();
+        }
     }
+    save_jobs(); // 每次状态推进都落快照——job 步频低、文件小，重启不丢换这点 IO 值得
+}
+
+/// 记一格步骤：同 key 已存在则原位更新状态/说明（run→ok/fail），否则追加。
+fn push_step(job_id: &str, key: &str, label: &str, status: &str, detail: &str) {
+    update_job(job_id, |j| {
+        if let Some(s) = j.steps.iter_mut().rev().find(|s| s.key == key) {
+            s.status = status.to_string();
+            if !detail.is_empty() {
+                s.detail = detail.to_string();
+            }
+            s.at = now_secs();
+        } else {
+            j.steps.push(JobStep {
+                key: key.to_string(),
+                label: label.to_string(),
+                status: status.to_string(),
+                detail: detail.to_string(),
+                at: now_secs(),
+            });
+        }
+    });
 }
 
 fn get_job(job_id: &str) -> Option<MediaJob> {
@@ -139,6 +236,33 @@ fn platform_cn(platform: &str) -> &'static str {
         "bilibili" => "哔哩哔哩",
         "douyin" => "抖音",
         _ => "自媒体平台",
+    }
+}
+
+/// 阶段的人话标签（步骤时间线用）。
+fn stage_label(stage: &str) -> &'static str {
+    match stage {
+        STAGE_GENERATE => "生成正文（Claude 主笔）",
+        STAGE_TYPESET => "排版（Markdown → 语义 HTML）",
+        STAGE_UPLOAD => "投递草稿（平台后台）",
+        _ => "未知阶段",
+    }
+}
+
+/// upload 脚本回执 step 名 → 人话标签（未识别的原样返回 step 名）。
+fn upload_step_label(step: &str) -> String {
+    match step {
+        "browser_launched" => "浏览器已拉起".to_string(),
+        "cdp_attached" => "CDP 已接管浏览器".to_string(),
+        "page_opened" => "编辑页已打开".to_string(),
+        "login_ok" => "登录态正常".to_string(),
+        "need_login" => "等待扫码登录".to_string(),
+        "title_filled" => "标题已填入".to_string(),
+        "body_injected" => "正文已注入".to_string(),
+        "cover_set" => "封面已设置".to_string(),
+        "images_uploaded" => "配图已上传".to_string(),
+        "draft_saved" => "草稿已保存".to_string(),
+        other => other.replace('_', " "),
     }
 }
 
@@ -594,10 +718,12 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     );
 
     log_line(log_path, &format!("generate：调 Claude 为「{cn}」写《{}》", job.title));
+    push_step(&job.id, "generate", stage_label(STAGE_GENERATE), "run", &format!("Claude 正在为「{cn}」写作…"));
     let raw = run_claude_collect(&job.id, &prompt, log_path)?;
     let body = strip_code_fence(&raw);
     let words = body.chars().count();
     log_line(log_path, &format!("generate：产出正文 {words} 字符"));
+    push_step(&job.id, "generate:guard", "内容守卫（CLI 错误话术 + 最小字数）", "run", &format!("产出 {words} 字符，校验中"));
 
     // ── 内容守卫（板块H E2E 教训）：claude CLI 会把「模型不可用」等错误当普通文本
     // 输出（exit 0），无守卫时 121 字报错串曾一路排版、投递成真草稿。两道闸：
@@ -605,6 +731,7 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     // 低于 300 字符必是异常产物，宁可失败也不许污染草稿箱。
     let guard_err = |msg: String| -> String {
         log_line(log_path, &format!("generate：内容守卫拦截——{msg}"));
+        push_step(&job.id, "generate:guard", "内容守卫（CLI 错误话术 + 最小字数）", "fail", &msg);
         format!("generate 内容守卫拦截：{msg}")
     };
     let low = body.to_ascii_lowercase();
@@ -631,6 +758,8 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
             body.chars().take(200).collect::<String>()
         )));
     }
+
+    push_step(&job.id, "generate:guard", "内容守卫（CLI 错误话术 + 最小字数）", "ok", &format!("{words} 字符，通过"));
 
     let path = article_path_for(&job.platform, &job.title);
     if let Some(parent) = path.parent() {
@@ -725,11 +854,14 @@ fn stage_upload(job: &MediaJob, content_path: &Path, log_path: &Path) -> Result<
     CHILDREN.insert(&key, child);
 
     // 边读边落日志，并记住「最后一行 result JSON」用于判定草稿是否成功。
+    // 同时把脚本的每步 JSON 回执（{"step":"title_filled",...}）解析成结构化步骤，
+    // 前端流程详情的「投递子步骤」就来自这里。
     let last_result = std::sync::Arc::new(Mutex::new(String::new()));
     let mut handles = Vec::new();
     if let Some(so) = stdout {
         let lp = log_path.to_path_buf();
         let lr = last_result.clone();
+        let jid = job.id.clone();
         handles.push(std::thread::spawn(move || {
             for line in BufReader::new(so).lines().map_while(Result::ok) {
                 let line = line.trim().to_string();
@@ -738,7 +870,24 @@ fn stage_upload(job: &MediaJob, content_path: &Path, log_path: &Path) -> Result<
                 }
                 log_line(&lp, &format!("  py> {line}"));
                 if line.contains("\"result\"") {
-                    *lr.lock() = line;
+                    *lr.lock() = line.clone();
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if let Some(step) = v.get("step").and_then(|s| s.as_str()) {
+                        let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(true);
+                        let detail = ["note", "detail", "method", "engine", "browser"]
+                            .iter()
+                            .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+                            .unwrap_or("")
+                            .to_string();
+                        push_step(
+                            &jid,
+                            &format!("upload:{step}"),
+                            &upload_step_label(step),
+                            if ok { "ok" } else { "fail" },
+                            &detail,
+                        );
+                    }
                 }
             }
         }));
@@ -829,6 +978,7 @@ fn run_job(job_id: String) {
 
     let fail = |job_id: &str, log_path: &Path, platform: &str, queue_id: &Option<String>, stage: &str, err: String| {
         log_line(log_path, &format!("{stage} 失败：{err}"));
+        push_step(job_id, stage, stage_label(stage), "fail", &err);
         update_job(job_id, |j| {
             j.status = "failed".to_string();
             j.error = Some(err.clone());
@@ -856,12 +1006,14 @@ fn run_job(job_id: String) {
             return;
         }
         update_job(&job_id, |j| j.stage = stage.clone());
+        push_step(&job_id, stage, stage_label(stage), "run", "");
 
         match stage.as_str() {
             STAGE_GENERATE => match stage_generate(&job0, &log_path) {
                 Ok(path) => {
                     content_path = Some(path.clone());
                     let ps = path.to_string_lossy().to_string();
+                    push_step(&job_id, stage, stage_label(stage), "ok", &format!("正文已落盘：{ps}"));
                     update_job(&job_id, |j| j.article_path = Some(ps.clone()));
                     if let Some(qid) = &job0.queue_id {
                         let _ = crate::mediaops::mediaops_queue_update(
@@ -888,8 +1040,13 @@ fn run_job(job_id: String) {
                     );
                 };
                 match stage_typeset(&job0, &md, &log_path) {
-                    Ok(Some(html)) => content_path = Some(html),
-                    Ok(None) => {}
+                    Ok(Some(html)) => {
+                        push_step(&job_id, stage, stage_label(stage), "ok", &format!("语义 HTML：{}", html.display()));
+                        content_path = Some(html);
+                    }
+                    Ok(None) => {
+                        push_step(&job_id, stage, stage_label(stage), "skip", "非公众号平台，投递脚本直接吃 .md");
+                    }
                     Err(e) => {
                         return fail(&job_id, &log_path, &job0.platform, &job0.queue_id, "typeset", e)
                     }
@@ -909,6 +1066,7 @@ fn run_job(job_id: String) {
                 match stage_upload(&job0, &cp, &log_path) {
                     Ok(result) => {
                         log_line(&log_path, &format!("upload：成功（result={result}）"));
+                        push_step(&job_id, stage, stage_label(stage), "ok", &format!("result={result}（草稿已推进到平台后台，窗口保留供预览）"));
                         if let Some(qid) = &job0.queue_id {
                             let _ = crate::mediaops::mediaops_queue_update(
                                 qid.clone(),
@@ -1017,6 +1175,7 @@ pub fn media_job_start(
         stages: stages_norm,
         status: "pending".to_string(),
         stage: String::new(),
+        steps: Vec::new(),
         article_path: seed_article,
         log_path: log_path.to_string_lossy().to_string(),
         error: None,
@@ -1024,6 +1183,7 @@ pub fn media_job_start(
         updated_at: now_secs(),
     };
     JOBS.lock().insert(job_id.clone(), job.clone());
+    save_jobs();
 
     // 后台线程跑，阻塞式子进程不占用命令线程。
     std::thread::spawn(move || run_job(job_id));
@@ -1057,6 +1217,12 @@ pub fn media_job_cancel(job_id: String) -> Result<(), String> {
                 }
                 j.status = "canceled".to_string();
                 j.error = Some("用户取消".to_string());
+                // 还挂着 run 的步骤一并收尾，详情时间线不留悬空转圈。
+                for s in j.steps.iter_mut().filter(|s| s.status == "run") {
+                    s.status = "fail".to_string();
+                    s.detail = "用户取消".to_string();
+                    s.at = now_secs();
+                }
                 j.updated_at = now_secs();
                 true
             }
@@ -1066,10 +1232,42 @@ pub fn media_job_cancel(job_id: String) -> Result<(), String> {
     if !existed {
         return Err(format!("job 不存在：{job_id}"));
     }
+    save_jobs();
     // 杀进程树（复用 runtime kill_tree）；不在跑则 no-op。
     CHILDREN.kill(&child_key(&job_id));
     log_line(&log_path_for(&job_id), "job 已被用户取消");
     Ok(())
+}
+
+/// 读一条 job 的日志尾部（流程详情视图的「实时日志」数据源）。
+/// `tail_lines` 缺省 400 行；日志本身就小，够回放全程。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn media_job_log(job_id: String, tail_lines: Option<usize>) -> Result<String, String> {
+    let job = get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))?;
+    let raw = match std::fs::read_to_string(&job.log_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(String::new()), // 日志尚未产生（pending）不算错
+    };
+    let keep = tail_lines.unwrap_or(400).max(1);
+    let lines: Vec<&str> = raw.lines().collect();
+    let start = lines.len().saturating_sub(keep);
+    Ok(lines[start..].join("\n"))
+}
+
+/// 读一条 job 的正文产物（.md 或公众号语义 .html），供详情视图预览。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn media_job_article(job_id: String) -> Result<String, String> {
+    const MAX_BYTES: u64 = 512 * 1024; // 正文预览上限，防手滑读进大文件
+    let job = get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))?;
+    let path = job
+        .article_path
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| "该 job 尚无正文产物".to_string())?;
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读产物失败：{e}"))?;
+    if meta.len() > MAX_BYTES {
+        return Err(format!("产物过大（{} KB），请直接打开文件查看：{path}", meta.len() / 1024));
+    }
+    std::fs::read_to_string(&path).map_err(|e| format!("读产物失败：{e}"))
 }
 
 #[cfg(test)]
