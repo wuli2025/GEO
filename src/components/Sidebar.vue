@@ -55,10 +55,10 @@ const moreNav: NavItem[] = [
   // 「数据看板」入口已撤：它现在是运营中心内部的第一个子标签（总控 → 数据看板，快捷键 G），
   // 两个入口两套数据源只会打架。老组件 MediaDashboard.vue 已删。
   { key: "media_ops", label: "运营中心", icon: Megaphone },
-  // 「PPT 演示」「网站生成」入口已隐藏：改由对话直接触发（说「做个 PPT / 做个网站」
-  // 即自动激活 polaris-deck-studio / polaris-web-studio 技能，见 skills.rs
-  // auto_skills_for_intent）。视图与路由（App.vue deck / web_studio）保留，
-  // 未来要加回入口时恢复这两行即可。
+  // 「PPT 演示」「网站生成」两个工坊已整体删除（DeckStudio/WebStudio/slidesSpec）。
+  // 它们此前是死代码：没有任何入口能切到 deck / web_studio 视图 —— 旧注释说的
+  // 「改由对话直接触发」并不成立，对话触发的是 skills.rs 的 skill，不切视图。
+  // 对话里说「做个 PPT / 做个网站」仍会激活对应 skill，那条链不受影响。
   { key: "video_course", label: "生成课件类视频", icon: Clapperboard },
   { key: "update", label: "更新", icon: CloudDownload },
   { key: "feishu", label: "聊天机器人", icon: MessageCircle },

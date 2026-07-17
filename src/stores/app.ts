@@ -28,9 +28,7 @@ export type ViewKey =
   | "sense_api"
   | "voice_input"
   | "video_course"
-  | "media_ops"
-  | "deck"
-  | "web_studio";
+  | "media_ops";
 
 export const useAppStore = defineStore("app", () => {
   const view = ref<ViewKey>("chat");

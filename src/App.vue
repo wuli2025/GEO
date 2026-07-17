@@ -54,8 +54,6 @@ const VideoCourseStudio = defineAsyncComponent(() => import("./components/VideoC
 // 自媒体运营中心 = GeoOpsCenter（设计稿 v2 深色控制台，整屏态见下方 .shell.geo-full）。
 // 数据看板并入其子标签（总控 → 数据看板）；旧的 MediaOps/MediaOpsCenter/MediaDashboard 已删。
 const GeoOpsCenter = defineAsyncComponent(() => import("./components/GeoOpsCenter.vue"));
-const DeckStudio = defineAsyncComponent(() => import("./components/DeckStudio.vue"));
-const WebStudio = defineAsyncComponent(() => import("./components/WebStudio.vue"));
 // 「让 AI 更懂你」向导常驻 App 级:首次打开才拉 chunk,之后保持挂载 → 扫描/归类跑着时
 // 用户可转后台、切视图、最小化窗口都不丢进度(组件不卸载,事件监听与状态都还在)。
 const OnboardingWizard = defineAsyncComponent(() => import("./components/OnboardingWizard.vue"));
@@ -378,7 +376,7 @@ function startSbDrag(e: MouseEvent) {
            绝不让异常冒泡到 app 根白屏 → 侧栏/任务中心/右抽屉及其它功能键照常可用。
            viewKey 让它感知视图切换并在切走时自愈(再切回=自动重试)。 -->
       <FaultBoundary :view-key="mountedView">
-      <KeepAlive :include="['KnowledgeGraph', 'SandboxStatus', 'DeckStudio', 'WebStudio', 'GeoOpsCenter', 'VideoCourseStudio']">
+      <KeepAlive :include="['KnowledgeGraph', 'SandboxStatus', 'GeoOpsCenter', 'VideoCourseStudio']">
         <ChatPanel v-if="mountedView === 'chat'" />
         <WikiBrowse v-else-if="mountedView === 'wiki'" />
         <FileCenter v-else-if="mountedView === 'file_center'" />
@@ -401,8 +399,6 @@ function startSbDrag(e: MouseEvent) {
         <VoiceSettings v-else-if="mountedView === 'voice_input'" />
         <VideoCourseStudio v-else-if="mountedView === 'video_course'" />
         <GeoOpsCenter v-else-if="mountedView === 'media_ops'" />
-        <DeckStudio v-else-if="mountedView === 'deck'" />
-        <WebStudio v-else-if="mountedView === 'web_studio'" />
       </KeepAlive>
       </FaultBoundary>
 

@@ -1,6 +1,8 @@
 // 共享演示主题目录 —— 与 polaris-deck-studio skill 的 assets/themes.css 一一对应。
-// DeckStudio.vue（PPT / 网页幻灯片）与 VideoCourseStudio.vue 共用，保证 UI 预览与
-// 实际生成的 deck 视觉一致。id == themes.css 里的 [data-theme] 取值。
+// VideoCourseStudio.vue 与 ArtifactEditor.vue 共用，保证 UI 预览与实际生成的 deck
+// 视觉一致。id == themes.css 里的 [data-theme] 取值。
+// （原共用方 DeckStudio.vue 已删 —— 它是死代码，没有入口能切到 deck 视图；
+//   本文件不随之删除，上面两个引用方仍在用。）
 
 export type DeckThemeGroup = "浅色" | "深色" | "特色" | "智能";
 
