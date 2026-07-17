@@ -79,3 +79,6 @@ docker/relay/certs/
 # GEO: local relay TLS certs (never commit private keys)
 docker/relay/certs/
 
+# 编译好的 Polaris 安装曾误落进 llmwiki/ 并入库(47MB)。知识库目录只收 markdown。
+llmwiki/Polaris/
+

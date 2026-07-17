@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Polaris GEO",
-  "version": "1.7.2",
+  "version": "0.1.0",
   "identifier": "com.polaris.geo",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -35,7 +35,7 @@
         "https://gh-proxy.com/https://github.com/wuli2025/GEO/releases/latest/download/latest.json",
         "https://github.com/wuli2025/GEO/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzMjVGREVCNjUxMEM4MzUKUldRMXlCQmw2LzBsZzJpaFhFanBZeTc0WjZ1Ull3WGdqVDhiVUNqV0Q0aGgrL2RYYzNRTi9Bb0YK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQwRTE2QkY3MjU2OTlCQzEKUldUQm0ya2w5MnZoMEJNVm50NnpzYVdKVWp4b3FNNnc1cnhSSE1nVitVVmJlMFlaYmhQRzBWYVQK",
       "windows": {
         "installMode": "passive"
       }

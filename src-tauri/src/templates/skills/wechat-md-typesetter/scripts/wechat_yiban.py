@@ -55,6 +55,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 
 # ───────────────────────── CloakBrowser（默认浏览器，drop-in 替换 Playwright）─────────────────────────
 # ── 本地真实 Chrome 优先（channel=chrome），CloakBrowser 仅作回退 ──
@@ -91,24 +92,178 @@ def launch(headless=True, humanize=False, **_):
     pw = _sync_pw().start(); b = pw.chromium.launch(headless=headless); b._pw = pw; return b
 
 
-def launch_persistent_context(user_data_dir=".", headless=True, humanize=False, **_):
-    if not _use_cloak() and _sync_pw is not None:
+CDP_PORT = int(os.environ.get("POLARIS_MP_CDP_PORT", "9222"))
+# 窗口要够高：公众号弹窗（图片库/编辑封面）的底部按钮是 fixed 定位、贴着视口下沿排。
+# 视口 1000 时「下一步」正好落在 y≈997——mouse.click 打在视口外会**静默失败**，
+# 表现为「点了没反应」，极难排查。1300 留足余量。
+WINDOW_SIZE = os.environ.get("POLARIS_MP_WINDOW", "1600,1300")
+
+
+def _cdp_version(port):
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=2) as r:
+            return json.loads(r.read().decode("utf-8", "ignore"))
+    except Exception:
+        return None
+
+
+def _chrome_exe():
+    cands = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/usr/bin/google-chrome", "/usr/bin/chromium",
+    ]
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("chromium")
+
+
+def _spawn_chrome_detached(exe, profile, port):
+    """脱离父进程启动 Chrome —— 浏览器必须活过本脚本退出。
+    Windows 上工具/CI 常把子进程放进 Job Object，父进程一死整树被杀；
+    CREATE_BREAKAWAY_FROM_JOB 显式脱离该 Job，这是「窗口留给用户」能成立的关键。"""
+    args = [exe, "--remote-debugging-port=%d" % port, "--user-data-dir=%s" % profile,
+            "--no-first-run", "--no-default-browser-check",
+            "--window-size=%s" % WINDOW_SIZE, "about:blank"]
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.name == "nt":
+        DETACHED, NEW_GROUP, BREAKAWAY = 0x00000008, 0x00000200, 0x01000000
         try:
-            pw = _sync_pw().start()
-            ctx = pw.chromium.launch_persistent_context(
-                user_data_dir, headless=headless, channel="chrome",
-                viewport={"width": 1600, "height": 1000},
-                args=["--no-first-run", "--no-default-browser-check"])
-            ctx._pw = pw
-            return ctx
-        except Exception:
-            pass
-    if _cloak_ctx is not None:
-        return _cloak_ctx(user_data_dir=user_data_dir, headless=headless, humanize=humanize)
+            return subprocess.Popen(args, creationflags=DETACHED | NEW_GROUP | BREAKAWAY, **kw)
+        except OSError:
+            return subprocess.Popen(args, creationflags=DETACHED | NEW_GROUP, **kw)
+    return subprocess.Popen(args, start_new_session=True, **kw)
+
+
+def launch_persistent_context(user_data_dir=".", headless=True, humanize=False, **_):
+    """公众号后台专用上下文：外部起真实 Chrome + CDP 接管（POLARIS_BROWSER=cloak 可强制 CloakBrowser）。
+
+    为什么不再用 pw.launch_persistent_context(channel="chrome")：
+      Playwright 自带的那套 --disable-features=… flag 与本地既有 profile 冲突，
+      在 Chrome 152 上**启动即段错误**(0xC0000005 / TargetClosedError)，且有头无头都崩；
+      异常被上层 except 吞掉后回退 CloakBrowser——而 CloakBrowser 会把公众号编辑器渲染歪、
+      封面键点不准。同一 profile 用 Chrome 自己的命令行启动则完全正常。
+
+    附带好处：CDP 起的浏览器是独立进程，脚本结束只断开连接（见 detach_keep_open），
+    窗口留在原地给用户核对——不再「传完自己关了」。
+    """
+    if _use_cloak():
+        if _cloak_ctx is not None:
+            return _cloak_ctx(user_data_dir=user_data_dir, headless=headless, humanize=humanize)
+        print("[壹伴] POLARIS_BROWSER=cloak 但 cloakbrowser 不可用，回退 CDP。", flush=True)
+
+    exe = _chrome_exe()
+    if _sync_pw is not None and exe and not headless:
+        try:
+            if not _cdp_version(CDP_PORT):
+                os.makedirs(user_data_dir, exist_ok=True)
+                _spawn_chrome_detached(exe, os.path.abspath(user_data_dir), CDP_PORT)
+                for _i in range(30):
+                    time.sleep(0.5)
+                    if _cdp_version(CDP_PORT):
+                        break
+            ver = _cdp_version(CDP_PORT)
+            if ver:
+                pw = _sync_pw().start()
+                browser = pw.chromium.connect_over_cdp("http://127.0.0.1:%d" % CDP_PORT)
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                ctx._pw = pw
+                ctx._cdp = True          # 标记：结束时只断连，别关窗
+                print("[壹伴] 已通过 CDP 接管本地 Chrome（%s，端口 %d）；"
+                      "脚本结束不会关窗。" % (ver.get("Browser"), CDP_PORT), flush=True)
+                return ctx
+        except Exception as e:
+            print("[壹伴] CDP 接管失败(%s)，回退 Playwright 自带 chromium。" % type(e).__name__,
+                  flush=True)
+
+    # 回退：自带 chromium（不用 channel="chrome"，避免上面那个段错误）
     pw = _sync_pw().start()
-    ctx = pw.chromium.launch_persistent_context(user_data_dir, headless=headless)
+    ctx = pw.chromium.launch_persistent_context(
+        user_data_dir, headless=headless,
+        viewport={"width": 1600, "height": 1300},
+        args=["--no-first-run", "--no-default-browser-check"])
     ctx._pw = pw
+    ctx._cdp = False
     return ctx
+
+
+MIN_VIEWPORT_H = 1100     # 公众号「图片库」「编辑封面」弹窗底部按钮排到 ~1050，低于这个就够不着
+
+
+def ensure_window_size(page, width=None, height=None):
+    """保证**布局视口**够高，够不着就上设备指标模拟。返回最终 innerHeight。
+
+    两个坑叠在一起：
+      ① 命令行 --window-size 对已有 profile 无效 —— Chrome 从 Preferences 恢复上次窗口尺寸。
+      ② 就算用 CDP Browser.setWindowBounds，物理窗口也**不可能超过屏幕**。本机主屏 1440x900，
+         视口最多 ~822，而弹窗的「下一步/确认」排在 y≈1000+ —— 永远够不着。
+    而 mouse.click 打在视口外是**静默失败**：不报错、不生效，只表现为「点了没反应」。
+
+    所以：先尽量把窗口撑到屏幕工作区大小（用户看着舒服），若视口仍不足则用
+    Emulation.setDeviceMetricsOverride 把**布局视口**撑到 1600x1300（与物理屏幕解耦，
+    Playwright 的 viewport 参数内部就是这么做的）。收尾前记得 clear_viewport_override 还原。
+    """
+    w = width or int(WINDOW_SIZE.split(",")[0])
+    h = height or int(WINDOW_SIZE.split(",")[1])
+    try:
+        sess = page.context.new_cdp_session(page)
+    except Exception:
+        try:
+            return page.evaluate("()=>window.innerHeight")     # 非 CDP：viewport 已在 launch 指定
+        except Exception:
+            return 0
+    try:
+        wid = sess.send("Browser.getWindowForTarget")["windowId"]
+        sess.send("Browser.setWindowBounds",
+                  {"windowId": wid, "bounds": {"windowState": "normal",
+                                               "left": 0, "top": 0, "width": w, "height": h}})
+        time.sleep(0.5)
+    except Exception:
+        pass
+    inner = page.evaluate("()=>window.innerHeight")
+    if inner >= MIN_VIEWPORT_H:
+        return inner
+    try:
+        sess.send("Emulation.setDeviceMetricsOverride",
+                  {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": False})
+        time.sleep(0.5)
+        inner2 = page.evaluate("()=>window.innerHeight")
+        print("[壹伴] 物理窗口只到视口 %dpx（屏幕装不下），已用设备模拟把布局视口撑到 %dpx —— "
+              "否则弹窗底部按钮够不着。" % (inner, inner2), flush=True)
+        page._polaris_override = sess
+        return inner2
+    except Exception:
+        print("[壹伴] 视口仅 %dpx 且模拟失败，封面弹窗按钮可能点不到。" % inner, flush=True)
+        return inner
+
+
+def clear_viewport_override(page):
+    """还原设备模拟 —— 窗口要留给用户看，别留一个被撑变形的布局。"""
+    sess = getattr(page, "_polaris_override", None)
+    if not sess:
+        return
+    try:
+        sess.send("Emulation.clearDeviceMetricsOverride")
+        page._polaris_override = None
+    except Exception:
+        pass
+
+
+def detach_keep_open(ctx):
+    """收尾：CDP 模式只断开连接，把浏览器窗口留给用户；自带 chromium 模式则无从保活，如实说明。"""
+    try:
+        if getattr(ctx, "_cdp", False):
+            ctx._pw.stop()          # 只断 CDP，Chrome 是独立进程，继续活着
+            print("[壹伴] 已断开 CDP —— 浏览器窗口保持打开，供你核对后自行发布。", flush=True)
+            return True
+        print("[壹伴] 注意：当前非 CDP 模式（回退了自带 chromium），"
+              "进程结束浏览器会一并关闭。", flush=True)
+        return False
+    except Exception:
+        return False
 
 
 # ───────────────────────── 后台 DOM 选择器（改版只动这里）─────────────────────────
@@ -129,19 +284,19 @@ SELECTORS = {
         "textarea[placeholder*='请在这里输入标题']",
         "textarea[placeholder*='输入标题']",
     ],
+    # 保存键：**不要**再放 #js_submit（改版残留的隐藏元素，命中它=点不动→静默退化成 Ctrl+S）
+    # 也不要放 "*:has-text('保存为草稿')"——`*` 会匹配到 <html>/<body>，等于恒真。
+    # 实际点击走 _click_save_button()（JS 找叶子节点 + elementFromPoint 验证没被蒙层盖住）。
     "save_draft": [
-        "#js_submit",                              # 历史「保存」按钮
         "button:has-text('保存为草稿')",
         "a:has-text('保存为草稿')",
         "div.weui-desktop-btn:has-text('保存为草稿')",
-        "*:has-text('保存为草稿')",
     ],
-    # 保存成功的回执：toast「保存成功」或编辑器状态条「已保存」（自动保存也算——内容入档即可）
-    "save_ok_hint": [
-        "*:has-text('保存成功')",
-        "*:has-text('已保存')",
-        "*:has-text('保存为草稿成功')",
-    ],
+    # 图片库缩略图：<i.weui-desktop-img-picker__img-thumb>，外层可点项是 __item。
+    # 注意它**不是 <img>**——旧版用 querySelectorAll('img') 找，永远抓不到，于是从没选中过图，
+    # 「下一步」一直禁用、弹窗卡死、蒙层反过来挡住保存键。
+    "img_picker_item": "div.weui-desktop-img-picker__item",
+    "img_picker_selected": "div.weui-desktop-img-picker__item.selected",
     # 判断是否已登录：登录后后台/草稿箱页会出现这些（weui-desktop 侧栏菜单文案，实测自 dump）
     "logged_in_hint": [
         "*:has-text('草稿箱')",
@@ -489,15 +644,24 @@ function (STYLIZE) {
   }
 
   function clickSave() {
-    var byId = document.getElementById("js_submit");
-    if (byId) { byId.click(); return true; }
-    var cands = document.querySelectorAll("button, a, div.weui-desktop-btn");
+    // 不要走 #js_submit：那是编辑器改版后残留的**隐藏**元素，对它 .click() 既不报错也不生效，
+    // 却会让这里直接 return true —— 真正的保存键连试都没试到，于是「点了没反应」。
+    function visible(el) {
+      if (!el) return false;
+      var r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+      return r.width > 8 && r.height > 6 && cs.visibility !== "hidden" &&
+             cs.display !== "none" && cs.opacity !== "0";
+    }
+    var cands = document.querySelectorAll("button, a, div.weui-desktop-btn, span");
     for (var i = 0; i < cands.length; i++) {
-      var t = (cands[i].textContent || "").trim();
-      if (t === "保存为草稿") { cands[i].click(); return true; }
+      if ((cands[i].textContent || "").trim() === "保存为草稿" && visible(cands[i])) {
+        cands[i].click(); return true;
+      }
     }
     for (var j = 0; j < cands.length; j++) {
-      if ((cands[j].textContent || "").trim() === "保存") { cands[j].click(); return true; }
+      if ((cands[j].textContent || "").trim() === "保存" && visible(cands[j])) {
+        cands[j].click(); return true;
+      }
     }
     return false;
   }
@@ -710,6 +874,91 @@ def _wait_any(page, selectors, seconds):
     return False
 
 
+# ───────────────────────── 等状态，别等秒表 ─────────────────────────
+# 旧版封面流程顺利路径也要睡满 ~30s 固定 time.sleep（上传后死等 6s、点完睡 3.5s…），
+# 图早传完了也得躺满。下面这套改成「轮询到状态出现就走」，顺利时通常 3-6s 完事。
+def _wait_for(fn, timeout=15.0, interval=0.25, desc=""):
+    """轮询等条件成立，一成立立刻返回它的值；超时返回 None。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            v = fn()
+            if v:
+                return v
+        except Exception:
+            pass
+        time.sleep(interval)
+    return None
+
+
+# 找「文本完全等于 txt 的可见叶子节点」并回报是否在视口内。
+# 只取叶子节点：否则会命中 <html>/包裹层这类大容器（旧版 "*:has-text()" 的老毛病）。
+_FIND_TEXT_JS = """(txt) => {
+  const out = [];
+  document.querySelectorAll('*').forEach(el => {
+    if (el.children.length > 0) return;
+    if (((el.innerText || el.textContent || '')).trim() !== txt) return;
+    const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (r.width < 6 || r.height < 6) return;
+    if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') return;
+    out.push({
+      x: r.x + r.width / 2, y: r.y + r.height / 2,
+      inView: r.top >= 0 && r.bottom <= window.innerHeight &&
+              r.left >= 0 && r.right <= window.innerWidth,
+    });
+  });
+  return out;
+}"""
+
+_TOP_AT_JS = """(p) => {
+  const e = document.elementFromPoint(p.x, p.y);
+  return e ? (e.tagName + '|' + (e.innerText || '').trim().slice(0, 24)) : 'null';
+}"""
+
+
+def _find_text(page, txt):
+    try:
+        return page.evaluate(_FIND_TEXT_JS, txt) or []
+    except Exception:
+        return []
+
+
+def _click_text(page, txt):
+    """点第一个「在视口内」的候选。视口外的坐标 mouse.click 会静默打空——
+    公众号弹窗底部按钮常常正好压在视口下沿，这个坑极隐蔽（表现为「点了没反应」）。"""
+    hits = _find_text(page, txt)
+    for h in hits:
+        if h.get("inView"):
+            page.mouse.click(h["x"], h["y"])
+            return True
+    if hits:
+        print("[壹伴] 「%s」找到了但在视口外(y≈%.0f)——窗口太小，"
+              "可设 POLARIS_MP_WINDOW=1600,1400 放大。" % (txt, hits[0]["y"]), flush=True)
+    return False
+
+
+def _appmsg_list(page, count=5):
+    """查草稿箱列表接口 —— 判断「到底存没存进去」的唯一可信依据。
+    编辑器里的 toast / 「已保存」字样都可能是假阳性，只有列表里真出现才算数。"""
+    try:
+        token = None
+        for p in list(page.context.pages):
+            m = re.search(r"[?&]token=(\d+)", p.url or "")
+            if m:
+                token = m.group(1)
+                break
+        if not token:
+            return []
+        api = ("https://mp.weixin.qq.com/cgi-bin/appmsg?begin=0&count=%d&t=media/appmsg_list2"
+               "&action=list_ex&type=77&token=%s&lang=zh_CN&f=json" % (count, token))
+        res = page.evaluate(
+            """async (u) => { const r = await fetch(u, {credentials: 'include'});
+                 try { return JSON.parse(await r.text()); } catch (e) { return null; } }""", api)
+        return (res or {}).get("app_msg_list") or []
+    except Exception:
+        return []
+
+
 # ───────────────────────── 壹伴引擎：在某个 page 上把正文套成成品 HTML（render 与兜底共用）─────────────────────────
 def _styled_html(page, body_html, theme):
     """about:blank + evaluate 自建容器→注入正文→跑壹伴引擎→返回包好的完整成品 HTML。
@@ -901,35 +1150,76 @@ def _fill_title(frame, editor_page, title):
     return False
 
 
-def _save_draft(editor_page):
-    """点「保存为草稿」并等回执。找不到按钮才退 Ctrl+S（公众号编辑器拦截了它）。
-    返回 (clicked, confirmed)——confirmed=出现「保存成功/已保存」类提示（自动保存也算入档）。"""
-    clicked = False
-    btn, _ = _first(editor_page, SELECTORS["save_draft"])
-    if btn:
+def _click_save_button(page):
+    """真正点到那个可见的「保存为草稿」。
+
+    旧版为什么会「报了保存却什么都没存」：候选选择器第一个是 #js_submit，那是编辑器改版后
+    残留的**隐藏**元素（跟 #title 一样 visibility:hidden）。_first 命中它 → .click() 对不可见
+    元素抛异常 → 被 except: pass 吞掉 → clicked 仍为 False → 退化成 Ctrl+S，而公众号编辑器
+    **拦截了 Ctrl+S** → 什么也没发生，clicked 却被置成 True。
+
+    现在：JS 找可见叶子节点，点前用 elementFromPoint 确认该坐标最顶层就是这个按钮
+    （被弹窗蒙层盖住时坚决不点——那一击会打在蒙层上，然后我们又会以为点到了）。
+    """
+    for attempt in range(3):
+        _cover_dismiss_block(page)
         try:
-            btn.click()
-            clicked = True
+            page.evaluate("()=>window.scrollTo(0, document.body.scrollHeight)")
         except Exception:
             pass
+        time.sleep(0.5)
+        for h in _find_text(page, "保存为草稿"):
+            if not h.get("inView"):
+                continue
+            try:
+                top = page.evaluate(_TOP_AT_JS, {"x": h["x"], "y": h["y"]})
+            except Exception:
+                continue
+            if "保存为草稿" in top:
+                page.mouse.click(h["x"], h["y"])
+                return True
+            print("[壹伴] 保存键被「%s」盖住，先关掉它再试（第%d次）" % (top[:24], attempt + 1),
+                  flush=True)
+        # 被蒙层挡住 → Esc 关掉挡路的弹窗再试
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+        time.sleep(1.0)
+    return False
+
+
+def _save_draft(editor_page, verify_title=None):
+    """点「保存为草稿」，并**用草稿箱接口**确认真的落地了。
+
+    旧版的 confirmed 取自 "*:has-text('已保存')" —— `*` 会匹配到 <html>，那是恒真的，
+    于是永远回报「已见保存回执」。配上上面 _click_save_button 里说的 Ctrl+S 假阳性，
+    合起来就是「一路绿灯、草稿箱空空」。回执这种东西不可信，只认列表接口。
+
+    返回 (clicked, confirmed)。给了 verify_title 才能做强校验；没给则退回找 toast。
+    """
+    clicked = _click_save_button(editor_page)
     if not clicked:
-        try:
-            editor_page.keyboard.press("Control+s")
-            clicked = True
-        except Exception:
-            pass
-    # 等回执期间顺手点掉「确定/完成」类确认弹窗（未填封面/摘要等提示会挡住保存流程，
-    # 不点掉它保存就永远完不成——回执也就永远等不到）
+        print("[壹伴] 没能点到可见的「保存为草稿」（可能被弹窗挡住或后台改版）。", flush=True)
+        return False, False
+
     confirmed = False
-    if clicked:
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            el, _ = _first(editor_page, SELECTORS["save_ok_hint"])
-            if el:
-                confirmed = True
-                break
-            _confirm_upload_dialog(editor_page)
-            time.sleep(0.5)
+    if verify_title:
+        key = verify_title[:20]
+
+        def hit():
+            for it in _appmsg_list(editor_page, 5):
+                if key and key in (it.get("title") or ""):
+                    return it
+            return None
+
+        confirmed = bool(_wait_for(hit, timeout=30, interval=2.0))
+        if not confirmed:
+            print("[壹伴] 已点保存，但 30s 内草稿箱接口里查不到这篇——**当作没存成**，"
+                  "请到后台核对。", flush=True)
+    else:
+        confirmed = bool(_wait_for(lambda: _find_text(editor_page, "保存成功"),
+                                   timeout=8, interval=0.4))
     return clicked, confirmed
 
 
@@ -1087,65 +1377,116 @@ def _upload_cover(page, cover_path):
     关键前置：登录需勾选「允许切换账号」，否则拦截弹窗挡住素材库。返回是否成功。"""
     if not cover_path or not os.path.isfile(cover_path):
         return False
-    try:
-        page.evaluate("()=>window.scrollTo(0, document.body.scrollHeight)"); time.sleep(2.0)
-        _cover_dismiss_block(page)
-        # ① 真实点击封面区（验证菜单开，最多重试 4 次）
-        menu_open = False
-        for _ in range(4):
-            el = page.query_selector(".select-cover_multi_drop") or page.query_selector("[class*=select-cover]")
-            if el:
-                try:
-                    el.scroll_into_view_if_needed(); box = el.bounding_box()
-                    if box: page.mouse.click(box["x"]+box["width"]/2, box["y"]+box["height"]/2)
-                except Exception: pass
-            time.sleep(2.0); _cover_dismiss_block(page)
-            if _cover_text_present(page, "从图片库选择"): menu_open = True; break
-        if not menu_open:
-            print("[壹伴] 封面：封面菜单没打开（可能缺「允许切换账号」权限被拦截弹窗挡住），跳过。", flush=True)
-            return False
-        # ② 从图片库选择 → 图片库弹窗
-        _cover_click_text(page, ["从图片库选择"]); time.sleep(3.5)
-        # ③ 上传文件（本地上传按钮叫「上传文件」）：文件选择器塞图，失败退回直接 set 隐藏 input
+    ITEM = SELECTORS["img_picker_item"]
+    t0 = time.time()
+
+    def count_items():
         try:
-            with page.expect_file_chooser(timeout=5000) as fcinfo:
-                _cover_click_text(page, ["上传文件"], exact=True)
-            fcinfo.value.set_files(cover_path)
+            return page.evaluate("(s) => document.querySelectorAll(s).length", ITEM)
         except Exception:
+            return 0
+
+    try:
+        try:
+            page.evaluate("()=>window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:
+            pass
+        _cover_dismiss_block(page)
+
+        # ① 封面区点一次就好 —— 千万别盲目重试：这个菜单是 toggle，再点一下就关了。
+        #    旧版「点4次每次睡2秒再查」经常自己把刚开的菜单点没了。
+        area = _wait_for(lambda: page.query_selector(".select-cover_multi_drop")
+                         or page.query_selector("[class*=select-cover]"), timeout=10)
+        if not area:
+            print("[壹伴] 封面：没找到封面区，跳过。", flush=True)
+            return False
+        area.scroll_into_view_if_needed()
+        box = area.bounding_box()
+        if not box:
+            return False
+        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        if not _wait_for(lambda: _find_text(page, "从图片库选择"), timeout=10):
+            print("[壹伴] 封面：菜单没打开（可能被「未授权切换账号」弹窗挡住），跳过。", flush=True)
+            return False
+
+        # ② 进图片库，等它真把缩略图渲染出来（不是睡 3.5 秒赌它好了）
+        _click_text(page, "从图片库选择")
+        if not _wait_for(count_items, timeout=20):
+            print("[壹伴] 封面：图片库没加载出缩略图，跳过。", flush=True)
+            return False
+        before = count_items()
+
+        # ③ 上传文件 → **等列表真多出一张**，这才是「传完了」的信号。
+        #    旧版在这里死等 6 秒：图早传完也得躺满，网慢时又不够——两头不讨好。
+        try:
+            with page.expect_file_chooser(timeout=8000) as fc:
+                _click_text(page, "上传文件")
+            fc.value.set_files(cover_path)
+        except Exception:
+            done = False
             for fr in page.frames:
                 try:
                     for c in fr.query_selector_all("input[type=file]"):
                         acc = (c.get_attribute("accept") or "").lower()
-                        if "image" in acc and "video" not in acc: c.set_input_files(cover_path); break
-                except Exception: pass
-        time.sleep(6.0)
-        # ④ 选中最新缩略图（「下一步」禁用是因为没选图）
-        picked = False
-        for fr in page.frames:
-            for sel in [".weui-desktop-img-picker__img-item", "[class*=img-picker] [class*=item]", "[class*=img-item]"]:
-                try:
-                    el = fr.query_selector(sel)
-                    if el and el.is_visible(): el.click(); picked = True; break
-                except Exception: pass
-            if picked: break
-        if not picked:
-            for fr in page.frames:
-                imgs = [i for i in fr.query_selector_all("img") if i.is_visible() and (i.bounding_box() or {}).get("width", 0) > 60]
-                if imgs:
-                    try: imgs[0].click(); picked = True; break
-                    except Exception: pass
-        time.sleep(1.5)
-        # ⑤ 下一步 → 裁剪确认
-        _cover_click_text(page, ["下一步"], exact=True); time.sleep(3.0)
-        for _ in range(3):
-            c = _cover_click_text(page, ["完成", "确定", "确认", "保存"], exact=True)
-            if not c: break
-            time.sleep(2.5); _cover_dismiss_block(page)
+                        if "image" in acc and "video" not in acc:
+                            c.set_input_files(cover_path); done = True; break
+                except Exception:
+                    pass
+                if done:
+                    break
+        grew = _wait_for(lambda: count_items() > before, timeout=45, interval=0.4)
+        print("[壹伴] 封面：上传%s（%.1fs）" % ("完成" if grew else "未见新图（可能已存在）",
+                                              time.time() - t0), flush=True)
+
+        # ④ 选中第一张（=最新上传的那张）并**验证真的选中了**。
+        #    缩略图是 <i.weui-desktop-img-picker__img-thumb>，不是 <img>——旧版拿 img 找，
+        #    永远选不中，于是「下一步」一直禁用、弹窗卡死。
+        rect = page.evaluate(
+            "(s) => { const e = document.querySelector(s); if (!e) return null;"
+            " const r = e.getBoundingClientRect();"
+            " return {x: r.x + r.width/2, y: r.y + r.height/2}; }", ITEM)
+        if not rect:
+            print("[壹伴] 封面：图片库里没有可选项，跳过。", flush=True)
+            return False
+        page.mouse.click(rect["x"], rect["y"])
+        if not _wait_for(lambda: page.evaluate(
+                "(s) => !!document.querySelector(s)", SELECTORS["img_picker_selected"]), timeout=8):
+            print("[壹伴] 封面：缩略图点了但没进选中态，跳过（否则「下一步」是灰的）。", flush=True)
+            page.keyboard.press("Escape")
+            return False
+
+        # ⑤ 下一步 → 「编辑封面」裁剪弹窗
+        if not _wait_for(lambda: _click_text(page, "下一步"), timeout=10):
+            print("[壹伴] 封面：点不到「下一步」，跳过。", flush=True)
+            page.keyboard.press("Escape")
+            return False
+
+        # ⑥ 裁剪确认。按钮叫「确认」——**不是「确定」**。一字之差会让整条链路白跑，
+        #    而且弹窗不关就会用蒙层挡死保存键，最终表现是「保存没反应」。
+        if not _wait_for(lambda: _click_text(page, "确认"), timeout=12):
+            for t in ("确定", "完成"):
+                if _click_text(page, t):
+                    break
+            else:
+                print("[壹伴] 封面：裁剪弹窗没点到「确认」，跳过。", flush=True)
+                page.keyboard.press("Escape")
+                return False
+
+        # ⑦ 确认弹窗真关了才算成功（关不掉就等于给保存键盖了张蒙层）
+        gone = _wait_for(lambda: not _find_text(page, "下一步") and not _find_text(page, "确认"),
+                         timeout=10)
+        if not gone:
+            print("[壹伴] 封面：弹窗没关干净，Esc 兜底。", flush=True)
+            page.keyboard.press("Escape")
+            time.sleep(0.8)
+        print("[壹伴] 封面：已设好（共 %.1fs）" % (time.time() - t0), flush=True)
         return True
     except Exception as e:
-        print("[壹伴] 封面上传出错（%s）——正文草稿不受影响，可手动设封面。" % e, flush=True)
-        try: page.keyboard.press("Escape")
-        except Exception: pass
+        print("[壹伴] 封面出错（%s）——正文草稿不受影响，可手动设封面。" % e, flush=True)
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
         return False
 
 
@@ -1167,6 +1508,9 @@ def run_publish(body_html, theme, title, save_fallback, text_only, timeout, cove
             return _publish_failed(ctx, body_html, theme, save_fallback,
                                    reason="超时未找到正文编辑器（可能未登录、未点进「写图文」，或后台改版）")
         editor_page = pg  # 编辑器所在的标签页（标题框/保存键在它上面）
+        # 撑视口必须在动弹窗之前：本机屏幕装不下 1300px 窗口时，封面弹窗的按钮会落在视口外，
+        # 而 mouse.click 打在视口外是静默失败的。
+        ensure_window_size(editor_page)
 
         expect_len = len(_plain_text(body_html))
 
@@ -1186,9 +1530,10 @@ def run_publish(body_html, theme, title, save_fallback, text_only, timeout, cove
             print("[壹伴] 正在设封面……", flush=True)
             cover_ok = _upload_cover(editor_page, cover_path)
             print("[壹伴] 封面：%s" % ("已上传并确认" if cover_ok else "未能自动设（可手动）"), flush=True)
-        saved_a, confirmed_a = _save_draft(editor_page)
+        saved_a, confirmed_a = _save_draft(editor_page, verify_title=title)
         print("[壹伴] 第一段保存：%s%s" % ("已点保存" if saved_a else "没找到保存键",
-              "，已见保存回执。" if confirmed_a else "，未见明确回执（编辑器多半已自动保存）。"), flush=True)
+              "，已在草稿箱接口确认落地。" if confirmed_a
+              else "，**接口里没查到——请到后台核对**。"), flush=True)
 
         phase_text = {"injected": True, "method": method_a, "chars": landed_a,
                       "title_filled": title_filled, "cover": cover_ok, "save_clicked": saved_a,
@@ -1213,7 +1558,7 @@ def run_publish(body_html, theme, title, save_fallback, text_only, timeout, cove
             styled = frame.evaluate(JS_OFFSCREEN_STYLE, {"body": body_html, "theme": theme})
             ok_b, method_b, landed_b = _inject_html(frame, body_sel, styled, expect_len)
             if ok_b:
-                saved_b, confirmed_b = _save_draft(editor_page)
+                saved_b, confirmed_b = _save_draft(editor_page, verify_title=title)
                 phase_style = {"applied": True, "method": method_b, "chars": landed_b,
                                "save_clicked": saved_b, "save_confirmed": confirmed_b}
                 print("[壹伴] 样式已套上（通道=%s）%s" % (method_b,
@@ -1250,8 +1595,13 @@ def run_publish(body_html, theme, title, save_fallback, text_only, timeout, cove
         }, ensure_ascii=False))
         print("[壹伴] 完成。窗口保持打开，核对无误后请自行发布。", flush=True)
     finally:
-        # publish 模式刻意不 close()，把窗口留给用户；进程结束由上层管。
-        pass
+        # 不 close()「不主动关」是不够的：Playwright 自己起的浏览器会随本进程一起死。
+        # 真正保活靠 CDP —— 浏览器是外部独立进程，这里只断开连接。
+        try:
+            clear_viewport_override(editor_page)   # 别给用户留个被模拟撑变形的窗口
+        except Exception:
+            pass
+        detach_keep_open(ctx)
 
 
 # ───────────────────────── 模式三：restyle（对已打开的草稿原地换主题——「上传完再改格式」）─────────────────────────
