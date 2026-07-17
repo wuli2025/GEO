@@ -543,6 +543,38 @@ pub fn prompt_version_rollback(id: String) -> Result<PromptVersion, String> {
     Ok(target)
 }
 
+/// 删除某个 prompt 版本记录（撤销误提交/清理测试数据；正常流程应留档以备回滚）。
+/// 删掉的若是 active 版，同锚点会失去「当前生效版本」——故自动把剩余版本里版本号
+/// 最大的一条提升为 active 补位，保证状态机不留「有版本却无 active」的空洞。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn prompt_version_delete(id: String) -> Result<(), String> {
+    {
+        let mut store = STORE.write();
+        let Some(pos) = store.prompt_versions.iter().position(|v| v.id == id) else {
+            return Err(format!("prompt 版本不存在：{id}"));
+        };
+        let removed = store.prompt_versions.remove(pos);
+        // 删的是 active → 同锚点剩余版本里挑版本号最大的补位。
+        if removed.status == "active" {
+            let mut best: Option<(u32, usize)> = None;
+            for (i, v) in store.prompt_versions.iter().enumerate() {
+                if v.expert_id == removed.expert_id
+                    && v.platform == removed.platform
+                    && v.anchor == removed.anchor
+                    && best.map(|(ver, _)| v.version > ver).unwrap_or(true)
+                {
+                    best = Some((v.version, i));
+                }
+            }
+            if let Some((_, i)) = best {
+                store.prompt_versions[i].status = "active".to_string();
+            }
+        }
+    }
+    persist();
+    Ok(())
+}
+
 // ───────────────────────── Commands: 飞轮健康度 ─────────────────────────
 
 /// 飞轮健康度汇总（本月窗口）。health = 本月创建且带度量证据的进化条目数。

@@ -548,6 +548,7 @@ export const evolutionApi = {
   promptVersionAdd: (expertId: string, anchor: string, content: string, platform?: string, perfNote?: string) =>
     invoke<PromptVersion>("prompt_version_add", { expertId, platform, anchor, content, perfNote }),
   promptVersionRollback: (id: string) => invoke<PromptVersion>("prompt_version_rollback", { id }),
+  promptVersionDelete: (id: string) => invoke<void>("prompt_version_delete", { id }),
   flywheel: () => invoke<FlywheelSummary>("flywheel_summary"),
 };
 

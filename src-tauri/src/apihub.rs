@@ -1019,6 +1019,7 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
         "prompt_version_rollback" => {
             ok(crate::evolution::prompt_version_rollback(req_str(a, "id")?)?)
         }
+        "prompt_version_delete" => ok(crate::evolution::prompt_version_delete(req_str(a, "id")?)?),
         "flywheel_summary" => ok(crate::evolution::flywheel_summary()),
 
         // ── 投递引擎全链路 job（media_engine.rs）──

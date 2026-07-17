@@ -248,6 +248,7 @@ pub fn run() {
             evolution::evolution_delete,
             evolution::prompt_version_add,
             evolution::prompt_version_rollback,
+            evolution::prompt_version_delete,
             evolution::flywheel_summary,
             // Sandbox (板块⑤ 已抽离为 polaris-sandbox crate, 命令名不变)
             polaris_sandbox::commands::sandbox_status,
