@@ -116,12 +116,19 @@ pub(crate) fn app_ctx_headers(auth_token: &Option<String>, headers: &HeaderMap) 
     resolve_app_auth_token(auth_token, bearer_of(headers).as_deref())
 }
 
-fn resolve_app_auth(state: &ApiState, token: Option<&str>) -> Option<AuthCtx> {
-    resolve_app_auth_token(&state.auth_token, token)
+/// resolve_app_auth_token 的异步壳:鉴权含同步 SQLite 查询(check_session),直接跑在
+/// axum async worker 上会钉住 reactor,挪进阻塞线程池。会话短缓存(collab/auth.rs)命中
+/// 时闭包内不落库,这层 spawn_blocking 兜的是未命中/首次。
+async fn resolve_app_auth(state: &ApiState, token: Option<String>) -> Option<AuthCtx> {
+    let auth_token = state.auth_token.clone();
+    tokio::task::spawn_blocking(move || resolve_app_auth_token(&auth_token, token.as_deref()))
+        .await
+        .ok()
+        .flatten()
 }
 
-fn app_ctx(state: &ApiState, headers: &HeaderMap) -> Option<AuthCtx> {
-    app_ctx_headers(&state.auth_token, headers)
+async fn app_ctx(state: &ApiState, headers: &HeaderMap) -> Option<AuthCtx> {
+    resolve_app_auth(state, bearer_of(headers)).await
 }
 
 /// 基础 `/api/invoke` 目前操作机器级项目/知识库/供应商配置,没有逐用户资源 ACL;
@@ -169,7 +176,7 @@ async fn invoke(
     headers: HeaderMap,
     Json(req): Json<InvokeRequest>,
 ) -> Response {
-    let Some(ctx) = app_ctx(&state, &headers) else {
+    let Some(ctx) = app_ctx(&state, &headers).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error":"未授权 (口令错误或会话失效)"})),
@@ -1168,7 +1175,7 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     // WS 鉴权走 query token（浏览器 WS 不便带自定义 header）。
-    let Some(ctx) = resolve_app_auth(&state, params.get("token").map(String::as_str)) else {
+    let Some(ctx) = resolve_app_auth(&state, params.get("token").cloned()).await else {
         return (StatusCode::UNAUTHORIZED, "未授权").into_response();
     };
     if role_rank(&ctx.role) < 3 {
@@ -1186,7 +1193,7 @@ async fn upload(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    let Some(ctx) = app_ctx(&state, &headers) else {
+    let Some(ctx) = app_ctx(&state, &headers).await else {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error":"未授权"}))).into_response();
     };
     if role_rank(&ctx.role) < 3 {
@@ -1318,7 +1325,10 @@ async fn serve_file(
     headers: HeaderMap,
     Query(q): Query<FileQuery>,
 ) -> Response {
-    let ctx = app_ctx(&state, &headers).or_else(|| resolve_app_auth(&state, q.token.as_deref()));
+    let ctx = match app_ctx(&state, &headers).await {
+        Some(c) => Some(c),
+        None => resolve_app_auth(&state, q.token.clone()).await,
+    };
     let Some(ctx) = ctx else {
         return (StatusCode::UNAUTHORIZED, "未授权").into_response();
     };
