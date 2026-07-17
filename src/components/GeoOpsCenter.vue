@@ -1,7 +1,6 @@
 <script setup lang="ts">
 /**
- * GEO 自媒体运营中心 · media_ops 视图的唯一渲染组件（旧的 MediaOps/MediaOpsCenter/MediaDashboard 已删）。
- * 本视图独占全窗：App.vue 的 .shell.geo-full 会把侧栏收成零宽，返回 Polaris 走 bar1 左侧的返回键。
+ * GEO 自媒体运营中心 —— 应用唯一界面（旧的 Polaris 通用外壳与 MediaOps 系组件均已删）。
  *
  * 严格按设计稿 v2：顶栏三排（bar1 三板块功能键 + 自建 SVG 图标；bar2 十平台门户切换器 + 健康条；
  * bar3 当前视图子标签）。深色控制台主题的全部 CSS 变量 scope 在 .geo-ops 下（geo/geo.css），
@@ -10,13 +9,12 @@
 import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from "vue";
 import "./geo/geo.css";
 import {
-  PLATFORMS, ZONES, SUBTABS, KEYMAP, ico, sdot,
+  PLATFORMS, ZONES, SUBTABS, KEYMAP, ico, pico, P,
 } from "./geo/data";
 import { chartTip } from "./geo/charts";
-import { toast } from "../composables/useToast";
-import { useAppStore } from "../stores/app";
 import { openJobId, openJobDetail, closeJobDetail } from "./geo/jobsBus";
 import JobDetailDrawer from "./geo/JobDetailDrawer.vue";
+import GlobalChatDock from "./geo/GlobalChatDock.vue";
 
 import vDashboard from "./geo/vDashboard.vue";
 import vApprovals from "./geo/vApprovals.vue";
@@ -41,10 +39,6 @@ const VIEW_COMPONENTS: Record<string, any> = {
   engine: vEngine, gate: vGate, layout: vLayout, api: vApi, portal: vPortal,
 };
 
-// 本视图独占全窗（App.vue 的 .shell.geo-full 收起侧栏），Polaris 的其余功能
-// 靠品牌区这个返回键回去 —— 设计稿没有侧栏，但老视图不能因此够不着。
-const app = useAppStore();
-
 // ── 状态 ──
 const view = ref("dashboard");
 const platform = ref("wechat");
@@ -66,23 +60,38 @@ function goSub(k: string) {
   sub.value = { ...sub.value, [curSubKey.value]: k };
 }
 
+// ── 全局 AI 对话坞（右侧常驻，可锚定当前泳道） ──
+const chatOpen = ref(localStorage.getItem("geo.globalChat.open") !== "0");
+function toggleChat() {
+  chatOpen.value = !chatOpen.value;
+  localStorage.setItem("geo.globalChat.open", chatOpen.value ? "1" : "0");
+}
+const VIEW_LABEL: Record<string, string> = (() => {
+  const m: Record<string, string> = {};
+  ZONES.forEach((z) => z.keys.forEach((k) => { m[k[0]] = k[2]; }));
+  return m;
+})();
+const anchorLabel = computed(() => {
+  if (openJobId.value) return "流程详情";
+  if (view.value === "portal") return `${P(platform.value)?.name ?? platform.value}门户`;
+  return VIEW_LABEL[view.value] ?? view.value;
+});
+const anchorCtx = computed(() => {
+  const parts = [`当前视图：${anchorLabel.value}`];
+  if (view.value === "portal") parts.push(`门户平台：${P(platform.value)?.name ?? platform.value}（id=${platform.value}）`);
+  if (currentSub.value) parts.push(`子标签：${currentSub.value}`);
+  if (openJobId.value) parts.push(`打开着的流程 job：${openJobId.value}`);
+  return parts.join("；");
+});
+
 // ── 顶栏派生 ──
 const pendTotal = computed(() => PLATFORMS.reduce((s, p) => s + p.pending, 0));
-const badCount = computed(() => PLATFORMS.filter((p) => p.login === "warn" || p.login === "bad").length);
-const todoCount = computed(() => PLATFORMS.filter((p) => p.login === "none").length);
-const healthInner = computed(() => {
-  let h = `<span title="日健康度：探测线正常、门禁拦截 2 篇、配额未超发">${sdot("ok", "日健康度 3/4")}</span>`;
-  h += `<span title="account-keeper 每周一 08:00 全平台体检；点进对应门户看明细">${badCount.value ? sdot("warn", badCount.value + " 个账号异常") : sdot("ok", "账号全绿")}</span>`;
-  if (todoCount.value) h += `<span title="已排期接入，适配未完成">${sdot("idle", todoCount.value + " 个待接入")}</span>`;
-  h += `<span title="token 日预算硬顶（超限走 L3 代码级拦截）">${sdot("ok", "token 6.2M / 8M")}</span>`;
-  return h;
-});
 function chipTitle(p: (typeof PLATFORMS)[number]): string {
   const st = p.login === "ok" ? "登录态正常" : p.login === "none" ? "尚未接入" : "账号/网络异常 — " + p.loginNote;
   return `${p.name}：${st}`;
 }
 
-// ── 事件委托（v-html 内容的导航 / 演示 toast） ──
+// ── 事件委托（v-html 内容的导航 / job 详情） ──
 function onDelegate(e: MouseEvent) {
   const target = e.target as HTMLElement;
   // 任意 v-html 内容里带 data-job 的元素 → 打开该条流程的生成详情
@@ -101,8 +110,6 @@ function onDelegate(e: MouseEvent) {
     if (gs) goSub(gs);
     return;
   }
-  const tEl = target.closest?.("[data-toast]") as HTMLElement | null;
-  if (tEl && tEl.dataset.toast) toast.info("原型演示：" + tEl.dataset.toast);
 }
 
 // ── 图表悬停（十字准线 + tooltip） ──
@@ -160,9 +167,6 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     <div class="geo-header">
       <!-- bar1：三板块功能键 -->
       <div class="bar1">
-        <button class="backkey" title="返回 Polaris（对话 / 图谱 / 工坊等）" @click="app.setView('chat')">
-          <span class="ic" v-html="ico('back')"></span>
-        </button>
         <div class="brand"><b>Polaris × GEO</b><small>自媒体运营中心</small></div>
         <div class="zone" v-for="z in ZONES" :key="z.label">
           <span class="zlab">{{ z.label }}</span>
@@ -178,6 +182,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             <span v-if="k[0] === 'approvals' && pendTotal" class="pip">{{ pendTotal }}</span>
           </button>
         </div>
+        <button
+          class="fkey chatkey"
+          :class="{ active: chatOpen }"
+          title="运营助手 · 全局 AI 对话（锚定当前泳道）"
+          @click="toggleChat"
+        >💬 助手</button>
       </div>
 
       <!-- bar2：媒体门户切换器 + 健康条 -->
@@ -191,10 +201,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           :title="chipTitle(p)"
           @click="go('portal', p.id)"
         >
-          {{ p.name }}<span v-if="p.pending" class="n">{{ p.pending }}</span>
+          <span class="pic" v-html="pico(p.id)"></span>{{ p.name }}<span v-if="p.pending" class="n">{{ p.pending }}</span>
         </button>
-        <button class="pchip ghost" @click="toast.info('原型演示：新建平台项目 ≤3 步（选平台→绑 conv 项目→套文风宪法模板）')">＋ 新建平台</button>
-        <div class="barhealth" v-html="healthInner"></div>
+        <button class="pchip ghost" title="接入新平台：先到账号矩阵扫码建登录态" @click="go('accounts')">＋ 新建平台</button>
       </div>
 
       <!-- bar3：当前视图子标签 -->
@@ -209,9 +218,17 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       </div>
     </div>
 
-    <!-- 视图区（事件委托 + 图表悬停） -->
-    <div class="geo-main" ref="main" @click="onDelegate" @mousemove="onMove" @mouseleave="hideTip">
-      <component :is="currentComp" :sub="currentSub" :platform="platform" />
+    <!-- 视图区 + 右侧全局对话坞 -->
+    <div class="geo-workarea">
+      <div class="geo-main" ref="main" @click="onDelegate" @mousemove="onMove" @mouseleave="hideTip">
+        <component :is="currentComp" :sub="currentSub" :platform="platform" />
+      </div>
+      <GlobalChatDock
+        v-if="chatOpen"
+        :anchor-label="anchorLabel"
+        :anchor-ctx="anchorCtx"
+        @close="toggleChat"
+      />
     </div>
 
     <div class="geo-tip" ref="tip"></div>

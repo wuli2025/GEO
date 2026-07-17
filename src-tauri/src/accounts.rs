@@ -1,4 +1,4 @@
-//! 自媒体「账号管理」— 7 平台登录态（浏览器 profile）的探测、打开登录窗口与解绑。
+//! 自媒体「账号管理」— 9 平台登录态（浏览器 profile）的探测、打开登录窗口与解绑。
 //!
 //! 背景：发文（草稿投递）依赖各平台的**持久化浏览器 profile 目录**保存登录态，扫一次码即可
 //! 长期复用。本模块给「账号管理」面板提供 ground-truth 与操作入口：
@@ -23,7 +23,7 @@ use std::time::UNIX_EPOCH;
 const ACCOUNT_WINDOW_PY: &str =
     include_str!("templates/skills/media-publisher/scripts/account_window.py");
 
-// ───────────────────────── 平台表（全局统一 7 平台，顺序固定） ─────────────────────────
+// ───────────────────────── 平台表（全局统一 9 平台，顺序固定） ─────────────────────────
 
 /// 平台静态配置。profile 目录另由 `profile_candidates()` 推导（wechat/xhs 有历史路径）。
 struct Platform {
@@ -75,6 +75,20 @@ const PLATFORMS: &[Platform] = &[
         name: "抖音图文",
         login_url: "https://creator.douyin.com/",
         draft_url: "https://creator.douyin.com/creator-micro/content/publish-media/text",
+    },
+    Platform {
+        id: "csdn",
+        name: "CSDN",
+        login_url: "https://passport.csdn.net/login",
+        // 只用裸 /md/：带 ?not_checkout=1 实测会被重定向去内容管理页，落不到编辑器。
+        // 与 draft_uploader.py 的 csdn.draft_url 必须保持一致（两处是各自独立的常量）。
+        draft_url: "https://editor.csdn.net/md/",
+    },
+    Platform {
+        id: "juejin",
+        name: "掘金",
+        login_url: "https://juejin.cn/login",
+        draft_url: "https://juejin.cn/editor/drafts/new?v=2",
     },
 ];
 
@@ -208,7 +222,7 @@ fn platform_status(pf: &Platform) -> AccountStatus {
     }
 }
 
-/// 列出各平台登录态（账号管理面板），固定 7 平台、顺序固定。
+/// 列出各平台登录态（账号管理面板），固定 9 平台、顺序固定。
 #[cfg_attr(feature = "desktop", tauri::command)]
 pub fn media_accounts_status() -> Vec<AccountStatus> {
     PLATFORMS.iter().map(platform_status).collect()

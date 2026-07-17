@@ -5,15 +5,24 @@
  *  - expert_media_overlay_get 读该平台补丁（runtime / seed / none）
  *  - expert_media_overlay_set 写该平台补丁（textarea 编辑 + 保存）
  * 用户点名的「各专家以及各影响结果的提示词可修改」的落点。
+ *
+ * 保存即版本化：overlaySet 之外还会 prompt_version_add 记一版 + evolution_add 留一张进化卡
+ * （PRD v2 不变式⑥：任何 prompt 变更都要在进化时间线上留卡）。此前 save 只写 overlay，
+ * 版本树从无写入点，「可回滚」是句空话；回滚也需人工把内容抄回专家文件——现在回滚直接写回。
  */
 import { ref, watch, onMounted, computed } from "vue";
 import {
   expertMedia,
+  evolutionApi,
   MEDIA_PLATFORMS,
   type MediaPlatform,
+  type PromptVersion,
 } from "../../tauri";
 import { toast } from "../../composables/useToast";
 import { EXPERTS } from "./data";
+
+/** 版本树锚点：整段平台补丁即一个可进化单元（与后端 ANCHOR_PLATFORM_OVERLAY 对齐）。 */
+const ANCHOR = "platform_overlay";
 
 const props = defineProps<{
   expertId: string;
@@ -68,13 +77,96 @@ async function load() {
   }
 }
 
+/** 本专家 + 本平台 + 本锚点的版本历史，新版在前。 */
+const versions = ref<PromptVersion[]>([]);
+const versionsErr = ref("");
+async function loadVersions() {
+  versionsErr.value = "";
+  try {
+    const st = await evolutionApi.state();
+    versions.value = st.promptVersions
+      .filter(
+        (v) =>
+          v.expertId === props.expertId &&
+          v.platform === plat.value &&
+          v.anchor === ANCHOR,
+      )
+      .sort((a, b) => b.version - a.version);
+  } catch (e: any) {
+    versionsErr.value = e?.message ?? String(e);
+  }
+}
+
+/**
+ * 极简行级 diff：只标出「消失的行」与「新增的行」，用于进化卡上的可读留档。
+ * 不做最小编辑距离——行内改动会显示成一删一增，对留档足够，别为它引依赖。
+ */
+function lineDiff(before: string, after: string): string {
+  const A = before.split("\n");
+  const B = after.split("\n");
+  const setA = new Set(A);
+  const setB = new Set(B);
+  const out = [
+    ...A.filter((l) => l.trim() && !setB.has(l)).map((l) => `- ${l}`),
+    ...B.filter((l) => l.trim() && !setA.has(l)).map((l) => `+ ${l}`),
+  ];
+  return out.join("\n").slice(0, 4000) || "（无行级变化）";
+}
+
 async function save() {
   if (!isReal(plat.value)) return;
   saving.value = true;
+  const before = versions.value.find((v) => v.status === "active")?.content ?? "";
   try {
     await expertMedia.overlaySet(plat.value, props.expertId, overlay.value);
     overlaySource.value = "runtime";
-    toast.success(`已保存 ${expertName.value} 在「${platName(plat.value)}」的补丁`);
+  } catch (e: any) {
+    toast.error(e?.message ?? String(e));
+    saving.value = false;
+    return;
+  }
+  // 补丁已经生效；版本化登记失败不该让用户以为白存了，故分开 catch、分开报。
+  try {
+    const v = await evolutionApi.promptVersionAdd(
+      props.expertId,
+      ANCHOR,
+      overlay.value,
+      plat.value,
+    );
+    await evolutionApi.add(
+      "prompt",
+      `${expertName.value} @ ${platName(plat.value)} 平台补丁 → v${v.version}`,
+      {
+        detail: `人工在专家提示词抽屉里改写平台补丁（${before.length} → ${overlay.value.length} 字符）。`,
+        diff: lineDiff(before, overlay.value),
+        proposer: "human",
+      },
+    );
+    await loadVersions();
+    toast.success(`已保存并记为 v${v.version}，可回滚`);
+  } catch (e: any) {
+    toast.info(`补丁已保存并生效，但版本化登记失败：${e?.message ?? String(e)}`);
+  } finally {
+    saving.value = false;
+  }
+}
+
+/** 回滚：版本树切 active + 把该版内容真正写回 overlay 文件（否则回滚只改账本不改行为）。 */
+async function rollback(v: PromptVersion) {
+  if (!isReal(plat.value)) return;
+  saving.value = true;
+  try {
+    const target = await evolutionApi.promptVersionRollback(v.id);
+    await expertMedia.overlaySet(plat.value, props.expertId, target.content);
+    overlay.value = target.content;
+    overlaySource.value = "runtime";
+    await evolutionApi.add(
+      "prompt",
+      `${expertName.value} @ ${platName(plat.value)} 回滚到 v${target.version}`,
+      { detail: "人工在专家提示词抽屉里一键回滚，内容已写回 overlay 文件。", proposer: "human" },
+    );
+    await Promise.all([loadVersions(), load()]);
+    toast.success(`已回滚到 v${target.version} 并写回生效`);
   } catch (e: any) {
     toast.error(e?.message ?? String(e));
   } finally {
@@ -86,8 +178,18 @@ function platName(id: string): string {
   return MEDIA_PLATFORMS.find((p) => p.id === id)?.name ?? id;
 }
 
-watch(plat, load);
-onMounted(load);
+function fmtDate(sec: number): string {
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+const VER_TEXT: Record<string, string> = {
+  active: "生效中", superseded: "已被替代", rolled_back: "已回滚",
+};
+
+watch(plat, () => { load(); loadVersions(); });
+onMounted(() => { load(); loadVersions(); });
 </script>
 
 <template>
@@ -126,12 +228,65 @@ onMounted(load);
           ></textarea>
           <div style="margin-top: 10px">
             <button class="btn" :disabled="saving || !!docErr" @click="save">
-              <span v-if="saving" class="spin" style="margin-right: 6px">◔</span>保存补丁
+              <span v-if="saving" class="spin" style="margin-right: 6px">◔</span>保存补丁（记一版）
             </button>
           </div>
-          <p class="foot">补丁版本化、可回滚；运行时按当前平台拼接：<code>系统提示 = 基础画像 + 平台补丁 + 闸门A注入</code>。</p>
+          <p class="foot">保存即在版本树记一版并在进化时间线留卡；运行时按当前平台拼接：<code>系统提示 = 基础画像 + 平台补丁 + 闸门A注入</code>。</p>
+        </div>
+
+        <div class="card">
+          <h3>版本历史（{{ platName(plat) }} · 整段补丁为锚）</h3>
+          <p v-if="versionsErr" class="foot" style="color: var(--bad)">读取版本树失败：{{ versionsErr }}</p>
+          <p v-else-if="!versions.length" class="foot">
+            还没有版本记录——这个专家在本平台的补丁自版本树上线后还没被改过。保存一次即产生 v1。
+          </p>
+          <div v-else class="vlist">
+            <div v-for="v in versions" :key="v.id" class="vrow">
+              <div class="vmeta">
+                <b>v{{ v.version }}</b>
+                <span class="vtag" :class="v.status">{{ VER_TEXT[v.status] ?? v.status }}</span>
+                <span style="color: var(--muted)">{{ fmtDate(v.createdAt) }} · {{ v.content.length }} 字符</span>
+              </div>
+              <div class="vact">
+                <button
+                  v-if="v.status !== 'active'"
+                  class="btn sm ghost"
+                  :disabled="saving"
+                  @click="rollback(v)"
+                >回滚到此版</button>
+                <button class="btn sm ghost" :disabled="saving" @click="overlay = v.content">载入编辑框</button>
+              </div>
+            </div>
+          </div>
+          <p class="foot">回滚会把该版内容写回 overlay 文件并立即生效，同时在进化时间线留卡。</p>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.vlist { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.vrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+}
+.vmeta { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); }
+.vact { display: flex; gap: 6px; }
+.vtag {
+  font-size: var(--text-2xs);
+  padding: 1px 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.vtag.active { border-color: var(--ok); color: var(--ok); }
+.vtag.rolled_back { border-color: var(--warn); color: var(--warn); }
+</style>

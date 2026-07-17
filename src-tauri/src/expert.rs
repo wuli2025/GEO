@@ -1094,6 +1094,11 @@ pub fn expert_media_overlay_set(
     expert_docs::media_overlay_write(&platform, &expert_id, &content)
 }
 
+/// 按 id 取专家卡（执行面留痕用：要写下「哪个专家」的人话名字与推荐模型档）。
+pub fn expert_card_by_id(expert_id: &str) -> Option<ExpertCard> {
+    all_experts_ref().iter().find(|e| e.id == expert_id).cloned()
+}
+
 /// 只返回「自媒体」组的 14 位专家。
 #[cfg_attr(feature = "desktop", tauri::command)]
 pub fn expert_media_list() -> Vec<ExpertCard> {

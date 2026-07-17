@@ -405,7 +405,8 @@ export const feishu = {
 // 自媒体「账号管理」
 // ──────────────────────────────────────────────────────────────
 export type MediaPlatform =
-  | "wechat" | "xhs" | "zhihu" | "toutiao" | "baijia" | "bilibili" | "douyin";
+  | "wechat" | "xhs" | "zhihu" | "toutiao" | "baijia" | "bilibili" | "douyin"
+  | "csdn" | "juejin";
 export const MEDIA_PLATFORMS: { id: MediaPlatform; name: string }[] = [
   { id: "wechat", name: "公众号" },
   { id: "xhs", name: "小红书" },
@@ -414,6 +415,8 @@ export const MEDIA_PLATFORMS: { id: MediaPlatform; name: string }[] = [
   { id: "baijia", name: "百家号" },
   { id: "bilibili", name: "B站" },
   { id: "douyin", name: "抖音" },
+  { id: "csdn", name: "CSDN" },
+  { id: "juejin", name: "掘金" },
 ];
 export interface MediaAccountStatus {
   platform: MediaPlatform;
@@ -560,6 +563,18 @@ export interface MediaJobStep {
   key: string; label: string;
   status: "run" | "ok" | "fail" | "skip";
   detail: string; at: number;
+  // ── 归因留痕（老 job 快照无此数据，一律按空串降级显示） ──
+  /** 编排里负责本环节的专家（空=本步不由专家驱动） */
+  expertId: string; expertName: string;
+  /** 编排里挂的技能 id / 本步实际落地的脚本 */
+  skillId: string; skillScript: string;
+  /** 喂给模型的提示词全文快照（仅 generate 有） */
+  prompt: string;
+  /** 快照当时生效的 overlay 版本 id（对应 PromptVersion.id，可空） */
+  promptVersionId: string;
+  /** 专家卡的推荐模型档——不等于实际跑的模型（generate 走 CLI 默认） */
+  modelHint: string;
+  durationMs: number; startedAt: number;
 }
 export interface MediaJob {
   id: string; queueId?: string; platform: string; title: string; topic: string;
@@ -1065,7 +1080,7 @@ export interface FableSearchResult {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Sandbox module → 已迁出至 features/sandbox/api.ts (架构重构 Phase 1)
+// Sandbox module → 已随通用外壳一并删除
 // 浏览器降级 stub 仍保留在本文件下方的 browserStub() 中。
 // ──────────────────────────────────────────────────────────────
 

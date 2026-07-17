@@ -235,16 +235,18 @@ fn mirror_candidates(url: &str) -> Vec<String> {
         Some(idx) => url[idx..].to_string(),
         None => return vec![url.to_string()],
     };
-    // 文件名（路径最后一段）→ Cloudflare 自托管兜底：站点 `polaris-2us.pages.dev/downloads/<文件名>`，
-    // 独立于 github + 镜像，国内可达性最好。装包很小(win 6MB / mac 14MB)，Pages 直接扛得住、无需 R2。
-    // 发版时把 setup.exe 与 Polaris.app.tar.gz 传进站点 downloads/ 并 `wrangler pages deploy`（见 release-manual）。
+    // 文件名（路径最后一段）→ Cloudflare 自托管兜底：R2 桶 `geo-dl.llmwiki.cloud/downloads/<文件名>`，
+    // 独立于 github + 镜像，国内可达性最好。由 release.yml 的「Upload to Cloudflare R2」步骤与
+    // GitHub Release 同版本同步上传。
+    //
+    // 用 R2 而非 Pages：Pages 单文件上限 25MiB，而 mac 的 .app.tar.gz 已 33MB（v0.1.0 实测）。
+    // 曾指向原版 Polaris 的 `polaris-2us.pages.dev`——那站从没有过 GEO 的包，对 GEO 文件名只回
+    // 36KB 的 SPA 首页 HTML；验签兜住了没出事故，但白等一次 30s 停滞看门狗才切走。
     let filename = bare.rsplit('/').next().unwrap_or("");
     let mut out = vec![format!("https://gh-proxy.com/{bare}")];
     // Cloudflare 排第二：首个源一「卡死」(停滞看门狗 ~30s 触发)就直接切到最可靠的自托管源，而非再耗在第二个 github 镜像上。
     if !filename.is_empty() {
-        out.push(format!(
-            "https://polaris-2us.pages.dev/downloads/{filename}"
-        ));
+        out.push(format!("https://geo-dl.llmwiki.cloud/downloads/{filename}"));
     }
     out.push(format!("https://ghfast.top/{bare}"));
     out.push(bare); // 直连 github，最后兜底
@@ -535,7 +537,7 @@ mod tests {
     #[test]
     fn mirror_candidates_wraps_bare_github_url() {
         let c = mirror_candidates(
-            "https://github.com/wuli2025/polaris_coworker/releases/download/v0.2.18/Polaris_0.2.18_x64-setup.exe",
+            "https://github.com/wuli2025/GEO/releases/download/v0.1.1/Polaris.GEO_0.1.1_x64-setup.exe",
         );
         // gh-proxy / Cloudflare / ghfast / 直连 共 4 个候选源。
         assert_eq!(c.len(), 4);
@@ -543,13 +545,13 @@ mod tests {
         // Cloudflare 排第二（首源卡死即切自托管），按文件名取。
         assert_eq!(
             c[1],
-            "https://polaris-2us.pages.dev/downloads/Polaris_0.2.18_x64-setup.exe"
+            "https://geo-dl.llmwiki.cloud/downloads/Polaris.GEO_0.1.1_x64-setup.exe"
         );
         assert!(c[2].starts_with("https://ghfast.top/https://github.com/"));
         // 末位是直连兜底（无镜像前缀）。
         assert_eq!(
             c[3],
-            "https://github.com/wuli2025/polaris_coworker/releases/download/v0.2.18/Polaris_0.2.18_x64-setup.exe"
+            "https://github.com/wuli2025/GEO/releases/download/v0.1.1/Polaris.GEO_0.1.1_x64-setup.exe"
         );
     }
 
@@ -557,17 +559,17 @@ mod tests {
     fn mirror_candidates_unwraps_already_mirrored_url() {
         // latest.json 里若已写成镜像 url，不能套娃，要剥回裸地址再重套。
         let c = mirror_candidates(
-            "https://gh-proxy.com/https://github.com/wuli2025/polaris_coworker/releases/download/v0.2.18/Polaris.app.tar.gz",
+            "https://gh-proxy.com/https://github.com/wuli2025/GEO/releases/download/v0.1.1/Polaris.GEO.app.tar.gz",
         );
         assert_eq!(c.len(), 4);
         // Cloudflare 兜底（第二位）按文件名，不带版本路径前缀。
         assert_eq!(
             c[1],
-            "https://polaris-2us.pages.dev/downloads/Polaris.app.tar.gz"
+            "https://geo-dl.llmwiki.cloud/downloads/Polaris.GEO.app.tar.gz"
         );
         assert_eq!(
             c[3],
-            "https://github.com/wuli2025/polaris_coworker/releases/download/v0.2.18/Polaris.app.tar.gz"
+            "https://github.com/wuli2025/GEO/releases/download/v0.1.1/Polaris.GEO.app.tar.gz"
         );
         // 不出现双重镜像前缀。
         assert!(!c[0].contains("gh-proxy.com/https://gh-proxy.com"));
@@ -575,11 +577,11 @@ mod tests {
 
     #[test]
     fn mirror_candidates_passthrough_non_github() {
-        // 非 github 源（如将来自托管 Cloudflare）直连、不套镜像。
-        let c = mirror_candidates("https://polaris-2us.pages.dev/v0.2.18/setup.exe");
+        // 非 github 源（如自托管 R2）直连、不套镜像。
+        let c = mirror_candidates("https://geo-dl.llmwiki.cloud/downloads/setup.exe");
         assert_eq!(
             c,
-            vec!["https://polaris-2us.pages.dev/v0.2.18/setup.exe".to_string()]
+            vec!["https://geo-dl.llmwiki.cloud/downloads/setup.exe".to_string()]
         );
     }
 

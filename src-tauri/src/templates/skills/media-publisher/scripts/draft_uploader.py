@@ -78,7 +78,8 @@ BROWSER_ENGINE = "local-chrome"
 # 整 Job 被杀）→ connect_over_cdp 接管 → 收尾只断连不关窗。
 # 每平台一个固定调试端口：同平台连投第二篇直接接管已在跑的 Chrome（免重启、免 profile 锁）。
 CDP_BASE_PORT = int(os.environ.get("POLARIS_MEDIA_CDP_PORT", "9330"))
-_CDP_OFFSET = {"zhihu": 1, "toutiao": 2, "bilibili": 3, "baijia": 4, "douyin": 5}
+_CDP_OFFSET = {"zhihu": 1, "toutiao": 2, "bilibili": 3, "baijia": 4, "douyin": 5,
+               "csdn": 6, "juejin": 7}
 
 
 def _cdp_port(platform):
@@ -462,6 +463,59 @@ PLATFORMS = {
                         "div.preview-_mkRqT", "div.container-IRuUu2"],
         },
     },
+    "csdn": {
+        # 2026-07-17 真机 DOM 探测 + 全链路实测（存草稿成功，articleId=162975362）：
+        #   · 编辑器是 **StackEdit 系**，不是 CodeMirror——正文 = pre.editor__inner[contenteditable]，
+        #     里面直接放 markdown **源码**（无 .CodeMirror、window.CodeMirror 也不存在）→ body_mode=markdown
+        #   · 首开必弹「模版库」div.modal(z-index:100 全屏)，不关掉则标题/存草稿的点击全被它吃
+        #     （Playwright 明报 <div class="modal"> intercepts pointer events）→ dismiss_selectors
+        #   · 标题是「点开才出 input」：常态 div.article-bar__title-display，input 本体 display:none
+        #     → 必须先点显示层，否则 fill 被可操作性检查挡下 → title_pre_click
+        #   · 入口只用 https://editor.csdn.net/md/：带 ?not_checkout=1 实测会被重定向去内容管理页
+        #   · 回执：保存 toast 抓不到（一闪即逝），但存成功后 URL 会带上 ?articleId=xxx（服务端真发了
+        #     草稿 id）→ 走 save_ok_url_patterns 这条硬证据
+        "name": "CSDN",
+        "status": "full",
+        "draft_url": "https://editor.csdn.net/md/",
+        "profile": _profile("csdn"),
+        "login_url_patterns": ["passport.csdn.net", "/login"],
+        "login_selectors": [".login-box", ".main-login", "iframe[src*='passport.csdn.net']"],
+        "dismiss_selectors": ["button.modal__close-button",
+                              ".modal__button-bar button:has-text('取消')"],
+        "title_pre_click": [".article-bar__title-display"],
+        "title_selectors": ["input.article-bar__title"],
+        "editor_selectors": ["pre.editor__inner"],
+        "body_mode": "markdown",
+        "editor_wait": 10,
+        "save_selectors": ["button.btn-save"],
+        "auto_save": False,
+        "save_ok_selectors": ["*:has-text('保存成功')"],
+        "save_ok_url_patterns": ["articleId="],
+    },
+    "juejin": {
+        # 2026-07-17 真机 DOM 探测：与 CSDN 同为 markdown 但**编辑器内核完全不同**——
+        #   · 掘金用 **CodeMirror 5**（.CodeMirror，实例挂在元素的 .CodeMirror 属性上）
+        #     → 注入必须走 cm.setValue()：CM 的 paste 监听在它自己的隐藏 textarea 上，
+        #       往包装 div 派合成 paste 事件接不住（CSDN 那条 text/plain 通道在这儿不成立）
+        #     → 校验也必须走 cm.getValue()：CM 虚拟滚动只渲染可视行，innerText 量长稿只有一屏
+        #   · 标题 input.title-input 是常态可见的普通 input，直接 fill 即可（不像 CSDN 要先点开）
+        #   · **没有存草稿按钮**：页面明写「文章将自动保存至草稿箱」，顶栏只有「草稿箱」(去列表)
+        #     和「发布」→ auto_save=True，save_selectors 留空（绝不能去点「发布」）
+        "name": "掘金",
+        "status": "full",
+        "draft_url": "https://juejin.cn/editor/drafts/new?v=2",
+        "profile": _profile("juejin"),
+        "login_url_patterns": ["juejin.cn/login", "/login"],
+        "login_selectors": [".login-box", ".auth-box", "input[placeholder*='手机号']"],
+        "title_selectors": ["input.title-input", "input[placeholder*='标题']"],
+        "editor_selectors": [".CodeMirror"],
+        "body_mode": "markdown",
+        "editor_wait": 10,
+        "save_selectors": [],   # 无存草稿按钮；auto_save 分支会短路，绝不会误点「发布」
+        "auto_save": True,
+        "save_ok_selectors": ["*:has-text('已自动保存')", "*:has-text('保存成功')",
+                              "*:has-text('已保存')"],
+    },
     # 下面两个平台已有更强的专用链路，不在这里重复实现
     "wechat": {
         "name": "微信公众号",
@@ -660,6 +714,22 @@ JS_PASTE = r"""
 }
 """
 
+# markdown 编辑器专用粘贴：**只塞 text/plain，绝不塞 text/html**。
+# CSDN/掘金 的正文框要的是 markdown **源码**；给了 text/html 它们会走「HTML→md 转换」
+# 或直接吞掉语法，结果是 # / ** / ``` 全丢。少给一个 MIME 反而是正确性要求，不是偷懒。
+JS_PASTE_TEXT = r"""
+(root, args) => {
+  try {
+    root.focus();
+    var dt = new DataTransfer();
+    dt.setData("text/plain", args.text);
+    var ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+    root.dispatchEvent(ev);
+    return true;
+  } catch (e) { return false; }
+}
+"""
+
 # 降级 2a：execCommand('insertHTML')；2b：insertText（Draft.js 只认 text）。
 JS_EXEC_INSERT_HTML = r"""
 (root, args) => {
@@ -687,6 +757,34 @@ JS_RAW_TEXT = r"""
 
 JS_TEXT_LEN = r"""
 (root) => ((root.innerText || root.textContent || "").replace(/\s+/g, "").length)
+"""
+
+# markdown 模式校验用：**不去空白、不删标记**的原始长度。md 源码里的换行/缩进/```
+# 都是内容本身，按 JS_TEXT_LEN 那样折叠空白会系统性低估落字数、把成功判成失败。
+# CodeMirror（掘金）必须走实例 API 读：CM 只把**可视行**渲染进 DOM（虚拟滚动），
+# 长稿用 innerText 量到的永远只有一屏，会把成功的注入误判成失败。
+JS_TEXT_LEN_RAW = r"""
+(root) => {
+  try {
+    var cm = root.CodeMirror;
+    if (cm && typeof cm.getValue === "function") return (cm.getValue() || "").length;
+  } catch (e) {}
+  return (root.innerText || root.textContent || "").length;
+}
+"""
+
+# CodeMirror 专用注入：直接调实例 API。CM 的 paste 监听挂在它自己的隐藏 textarea 上，
+# 往 .CodeMirror 包装 div 派合成 paste 事件根本不会被它接住——必须走 setValue。
+JS_CM_SET_VALUE = r"""
+(root, args) => {
+  try {
+    var cm = root.CodeMirror;
+    if (!cm || typeof cm.setValue !== "function") return false;
+    cm.setValue(args.text);
+    cm.refresh();
+    return true;
+  } catch (e) { return false; }
+}
 """
 
 # 图片粘贴：dataURL → File → DataTransfer → 合成 paste（编辑器原生欢迎图片粘贴）。
@@ -833,9 +931,77 @@ def inject_body(frame, el_sel, html, text):
         return False, "none", -1
 
 
+def inject_markdown(frame, el_sel, md):
+    """markdown 编辑器（CSDN StackEdit 系 pre.editor__inner / 掘金）注入 **markdown 源码**。
+
+    与 inject_body 的根本区别：这里要的是源码保真，不是富文本渲染——
+      · 只走 text/plain 粘贴通道（塞 text/html 会让编辑器把 md 语法转换掉）
+      · 校验按**源码字符数**（含空白与 #/*/` 等标记），不能复用 inject_body 那套
+        「去空白后的纯文字长度」——那会把 ```python 之类的语法标记算漏、误判失败。
+    返回 (ok, method, landed)。"""
+    expect = max(1, len(md))
+    threshold = max(1, int(expect * 0.6))
+
+    def landed():
+        try:
+            return frame.eval_on_selector(el_sel, JS_TEXT_LEN_RAW)
+        except Exception:
+            return -1
+
+    # ① CodeMirror（掘金）：直接调实例 setValue。放在最前——CM 接不住合成 paste，
+    #    先试粘贴只会白等一轮超时。非 CM 平台（CSDN）这里必然 false，立刻落到 ②。
+    try:
+        if frame.eval_on_selector(el_sel, JS_CM_SET_VALUE, {"text": md}):
+            time.sleep(0.8)
+            n = landed()
+            if n >= threshold:
+                return True, "codemirror:setValue", n
+    except Exception:
+        pass
+    # ② 全选（覆盖模板/欢迎稿）→ 只贴 text/plain
+    try:
+        frame.eval_on_selector(el_sel, JS_FOCUS_SELECT)
+        time.sleep(0.4)
+        frame.eval_on_selector(el_sel, JS_PASTE_TEXT, {"text": md})
+        time.sleep(1.2)
+        n = landed()
+        if n >= threshold:
+            return True, "paste:text/plain", n
+    except Exception:
+        pass
+    # ③ execCommand insertText（同样只走纯文本）
+    try:
+        frame.eval_on_selector(el_sel, JS_EXEC_INSERT_TEXT, {"text": md})
+        time.sleep(0.8)
+        n = landed()
+        if n >= threshold:
+            return True, "execCommand:insertText", n
+    except Exception:
+        pass
+    # ④ innerText 直写兜底
+    try:
+        frame.eval_on_selector(el_sel, JS_RAW_TEXT, {"text": md})
+        time.sleep(0.6)
+        n = landed()
+        return (n >= threshold), "innerText", n
+    except Exception:
+        return False, "none", -1
+
+
 def fill_title(page, cfg, title):
     if not title:
         return False
+    # 「点开才出 input」型标题（CSDN：常态是 div.article-bar__title-display，input 本体 display:none，
+    # 直接 fill 会被 Playwright 的可操作性检查挡下）——先点显示层把真 input 唤出来。
+    for sel in cfg.get("title_pre_click", []):
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click()
+                time.sleep(0.5)
+                break
+        except Exception:
+            continue
     fr, el, sel = _find_in_frames(page, cfg.get("title_selectors", []))
     if not el:
         return False
@@ -849,6 +1015,23 @@ def fill_title(page, cfg, title):
             return True
         except Exception:
             return False
+
+
+def dismiss_overlays(page, cfg):
+    """关掉开页即弹、且会吃掉后续所有点击的浮层。
+    CSDN 首开编辑器必弹「模版库」(div.modal, z-index:100 全屏)——不关掉，点标题和存草稿
+    全被它拦截（真机现象：Playwright 报 <div class="modal"> intercepts pointer events）。"""
+    for sel in cfg.get("dismiss_selectors", []):
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click()
+                time.sleep(0.6)
+                _log("overlay_dismissed", selector=sel)
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def paste_images(page, frame, el_sel, images):
@@ -1061,7 +1244,7 @@ def save_draft(page, cfg):
     """点「存草稿」并等回执。auto_save 平台只等自动保存提示。返回 (clicked, confirmed)。"""
     if cfg.get("auto_save"):
         # 知乎等平台按内容变更自动存草稿——正文刚粘贴入档就是变更，这里只等保存提示出现
-        confirmed = _wait_any(page, cfg.get("save_ok_selectors", []), 12)
+        confirmed = _wait_receipt(page, cfg, 12)
         return True, confirmed
     # 本平台无存草稿按钮（如抖音图文）：只填充、不保存、不按 Ctrl+S（避免触发浏览器保存框），留人工
     if not cfg.get("save_selectors"):
@@ -1082,18 +1265,31 @@ def save_draft(page, cfg):
             _log("save_hotkey")
         except Exception:
             pass
-    confirmed = _wait_any(page, cfg.get("save_ok_selectors", []), 12) if clicked else False
+    confirmed = _wait_receipt(page, cfg, 12) if clicked else False
     return clicked, confirmed
 
 
-def _wait_any(page, selectors, seconds):
-    if not selectors:
+def _wait_receipt(page, cfg, seconds):
+    """等保存回执：文案选择器 **或** URL 特征，任一命中即确认。
+    URL 通道是给 CSDN 这类「toast 一闪而过、但存草稿成功后 URL 会带上 ?articleId=xxx」的平台——
+    真机实测它的成功提示抓不到（3.5s 内已消失），而 articleId 是服务端真发了草稿 id 的硬证据。"""
+    selectors = cfg.get("save_ok_selectors", [])
+    url_pats = cfg.get("save_ok_url_patterns", [])
+    if not selectors and not url_pats:
         return False
     deadline = time.time() + seconds
     while time.time() < deadline:
-        fr, el, _ = _find_in_frames(page, selectors)
-        if el:
-            return True
+        if url_pats:
+            try:
+                url = page.url or ""
+                if any(p in url for p in url_pats):
+                    return True
+            except Exception:
+                pass
+        if selectors:
+            fr, el, _ = _find_in_frames(page, selectors)
+            if el:
+                return True
         time.sleep(0.5)
     return False
 
@@ -1241,6 +1437,10 @@ def run(platform, title, content_file, images, manual):
                 hold_window(ctx)
                 return 0
 
+        # 关掉开页即弹的浮层（CSDN「模版库」）——必须在任何点击动作之前，否则它吃掉所有 click。
+        # 放在登录检测之后：未登录时弹的是登录框，不该被这里误关。
+        dismiss_overlays(page, cfg)
+
         # ── manual 模式 / partial 平台：编辑页已开，剪贴板辅助 ──
         if manual or cfg["status"] == "partial":
             # partial 平台若标题选择器可用，先尽力把标题自动填上（如 B站标题 input 可用，
@@ -1280,7 +1480,13 @@ def run(platform, title, content_file, images, manual):
         if not el:
             raise RuntimeError("没找到正文编辑器（选择器全部落空，可能后台改版）")
 
-        ok, method, landed = inject_body(fr, el_sel, html, text)
+        if cfg.get("body_mode") == "markdown":
+            # markdown 编辑器（CSDN/掘金）：喂 **原始 md 源码**（load_content 的 raw），
+            # 不能喂 html/纯文本——前者会被转换掉语法，后者直接丢掉 #/**/``` 标记。
+            md_src = raw or text
+            ok, method, landed = inject_markdown(fr, el_sel, md_src)
+        else:
+            ok, method, landed = inject_body(fr, el_sel, html, text)
         _log("body_injected", ok=ok, method=method, chars=landed)
         if not ok:
             raise RuntimeError("正文注入三级通道全部失败（落入 %d 字）" % landed)
@@ -1316,7 +1522,9 @@ def run(platform, title, content_file, images, manual):
             title_clip = bool(set_clipboard(title))
             _log("title_to_clipboard", ok=title_clip)
 
-        no_draft_btn = not cfg.get("save_selectors")
+        # 「没有存草稿按钮」≠「没有草稿箱」：知乎/掘金都没按钮，但都会自动存进草稿箱。
+        # 只按 save_selectors 空判定会对这两个平台谎报「本平台无草稿箱」——auto_save 必须排除在外。
+        no_draft_btn = not cfg.get("save_selectors") and not cfg.get("auto_save")
         if no_draft_btn:
             save_desc = "本平台无草稿箱，已完成填充，请核对后自行发布"
             confirm_desc = ""

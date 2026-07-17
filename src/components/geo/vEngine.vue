@@ -10,11 +10,13 @@ const html = computed(() => vEngineHtml(props.sub));
 const PLATFORMS: [string, string][] = [
   ["wechat", "公众号"], ["zhihu", "知乎"], ["toutiao", "头条号"], ["baijia", "百家号"],
   ["xhs", "小红书"], ["bilibili", "B站专栏"], ["douyin", "抖音图文"],
+  ["csdn", "CSDN"], ["juejin", "掘金"],
 ];
 const platformSel = ref("toutiao");
 const title = ref("");
 const topic = ref("");
 const stGenerate = ref(true);
+const stImage = ref(true);
 const stTypeset = ref(true);
 const stUpload = ref(true);
 const jobs = ref<MediaJob[]>([]);
@@ -36,6 +38,7 @@ async function start() {
   if (!title.value.trim()) { msg.value = "标题必填"; return; }
   const stages = [
     ...(stGenerate.value ? ["generate"] : []),
+    ...(stImage.value ? ["image"] : []),
     ...(stTypeset.value ? ["typeset"] : []),
     ...(stUpload.value ? ["upload"] : []),
   ];
@@ -63,7 +66,7 @@ watch(openJobId, (v) => { if (!v) refreshJobs(); });
 <template>
   <div>
     <div class="card" style="margin-bottom:12px">
-      <h3>全链路试跑（生成 → 排版 → 上传草稿，只进草稿箱绝不发布）</h3>
+      <h3>全链路试跑（生成 → 配图 → 排版 → 上传草稿，只进草稿箱绝不发布）</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;align-items:center">
         <select v-model="platformSel" class="geo-input">
           <option v-for="[id, name] in PLATFORMS" :key="id" :value="id">{{ name }}</option>
@@ -73,6 +76,7 @@ watch(openJobId, (v) => { if (!v) refreshJobs(); });
       </div>
       <div style="display:flex;gap:14px;margin-top:8px;font-size:14px;color:var(--ink2);align-items:center;flex-wrap:wrap">
         <label><input type="checkbox" v-model="stGenerate" /> generate（Claude 生成）</label>
+        <label title="配图导演读文章自己出画面描述，AI 生成封面+插图并插回正文"><input type="checkbox" v-model="stImage" /> image（AI 配图）</label>
         <label><input type="checkbox" v-model="stTypeset" /> typeset（排版）</label>
         <label><input type="checkbox" v-model="stUpload" /> upload（进草稿箱）</label>
         <button class="btn sm" :disabled="busy" @click="start">启动 job</button>
@@ -103,7 +107,7 @@ watch(openJobId, (v) => { if (!v) refreshJobs(); });
 .geo-input {
   background: var(--code-bg, #0b0e1a);
   border: 1px solid var(--line, #2a3050);
-  color: var(--ink, #e8eaf6);
+  color: var(--ink, #1c2233);
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 14px;
@@ -111,5 +115,5 @@ watch(openJobId, (v) => { if (!v) refreshJobs(); });
 }
 .geo-input:focus-visible { outline: 2px solid var(--focus, #8fa6ff); outline-offset: 1px; }
 .job-row { cursor: pointer; }
-.job-row:hover td { background: rgba(255, 255, 255, 0.03); }
+.job-row:hover td { background: rgba(28, 40, 80, 0.04); }
 </style>

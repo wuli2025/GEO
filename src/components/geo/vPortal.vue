@@ -170,6 +170,33 @@ const planStaticHtml = computed(() => {
     <div class="callout" style="margin-top:10px">${props.platform === "zhihu" ? "<b>本平台有活跃提案</b>：探测发现「知乎被引率连涨 3 周」→ 提案周篇数 3→4（<span class='badge b-l1'>L1</span> 已自动生效，观察期至 07-23）。" : "该平台本周无策略变更提案。"} <a class="glnk" data-go="autopilot">进自动规划 →</a></div></div></section>`;
 });
 
+// ── 看板真实泳道：选题池 + 队列 + job 按状态分列，每张卡点开真实生成流程 ──
+type LaneCard = { key: string; title: string; jobId?: string; note?: string; topic?: MediaTopic; hot?: boolean };
+const lanes = computed<{ name: string; cards: LaneCard[] }[]>(() => {
+  const jb = jobByQueue.value;
+  const qCard = (q: MediaQueueItem, hot = false): LaneCard => ({
+    key: q.id, title: q.title, jobId: jb[q.id]?.id, note: q.note || undefined, hot,
+  });
+  const byStatus = (st: MediaQueueItem["status"]) => queue.value.filter((q) => q.status === st);
+  const running = queue.value.filter((q) => q.status === "running"
+    || (jb[q.id] && (jb[q.id].status === "running" || jb[q.id].status === "pending") && q.status === "queued"));
+  const runningIds = new Set(running.map((q) => q.id));
+  return [
+    { name: "选题池", cards: topics.value.filter((t) => t.status !== "picked").map((t) => ({ key: t.id, title: t.title, topic: t })) },
+    { name: "排队中", cards: byStatus("queued").filter((q) => !runningIds.has(q.id)).map((q) => qCard(q)) },
+    { name: "流水线在跑", cards: running.map((q) => qCard(q, true)) },
+    { name: "草稿已投·待人预览", cards: byStatus("draft_uploaded").map((q) => qCard(q, true)) },
+    { name: "完成", cards: byStatus("done").map((q) => qCard(q)) },
+    { name: "失败", cards: byStatus("failed").map((q) => qCard(q)) },
+  ];
+});
+function laneCardClick(c: LaneCard) {
+  if (c.jobId) { openJobDetail(c.jobId); return; }
+  if (c.topic) { produceTopic(c.topic); return; }
+  const q = queue.value.find((x) => x.id === c.key);
+  if (q) runQueueItem(q);
+}
+
 // 门户「编辑补丁」→ 抽屉（锁定本平台）
 const editingExpert = ref<string | null>(null);
 function onClick(e: MouseEvent) {
@@ -182,7 +209,32 @@ function onClick(e: MouseEvent) {
   <div @click="onClick">
     <div v-html="head"></div>
 
-    <div v-if="props.sub === 'board'" v-html="boardHtml"></div>
+    <template v-if="props.sub === 'board'">
+      <section>
+        <div class="lanes">
+          <div v-for="l in lanes" :key="l.name" class="lane">
+            <h5>{{ l.name }}<span class="cnt">{{ l.cards.length }}</span></h5>
+            <div
+              v-for="c in l.cards"
+              :key="c.key"
+              class="draft"
+              :title="c.jobId ? '点击查看这条流程的生成过程' : c.topic ? '点击：入队并启动全链路流水线' : '点击：启动全链路流水线'"
+              @click="laneCardClick(c)"
+            >
+              {{ c.title }}
+              <div class="tags">
+                <span class="tag">{{ pname }}</span>
+                <span v-if="c.hot" class="tag hot">{{ c.jobId ? "点开看进度" : "等点头" }}</span>
+                <span v-else-if="c.topic" class="tag">▶ 生成→投递</span>
+                <span v-if="c.note" class="tag">{{ c.note }}</span>
+              </div>
+            </div>
+            <div v-if="!l.cards.length" style="color: var(--muted); font-size: var(--text-2xs); padding: 5px 2px">（空）</div>
+          </div>
+        </div>
+      </section>
+      <div v-html="boardHtml"></div>
+    </template>
     <div v-else-if="props.sub === 'blockers'" v-html="blockersHtml"></div>
     <div v-else-if="props.sub === 'style'" v-html="styleHtml"></div>
     <div v-else-if="props.sub === 'team'" v-html="teamHtml"></div>

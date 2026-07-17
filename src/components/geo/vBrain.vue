@@ -113,7 +113,7 @@ async function rollback(id: string) {
 .geo-input {
   background: var(--code-bg, #0b0e1a);
   border: 1px solid var(--line, #2a3050);
-  color: var(--ink, #e8eaf6);
+  color: var(--ink, #1c2233);
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 14px;

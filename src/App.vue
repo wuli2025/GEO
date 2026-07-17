@@ -1,451 +1,71 @@
 <script setup lang="ts">
-import {
-  computed,
-  ref,
-  watch,
-  onMounted,
-  onBeforeUnmount,
-  defineAsyncComponent,
-} from "vue";
-// ── 常驻 / 首屏关键：静态导入（启动即需，进启动主包）──
-import Sidebar from "./components/Sidebar.vue";
-import ViewLoader from "./components/ViewLoader.vue";
-import RightDrawer from "./components/RightDrawer.vue";
+/**
+ * GEO 自媒体运营中心 —— 应用唯一界面。
+ * 原 Polaris 通用外壳(侧栏/对话/文库/文件中心/图谱/工坊等视图)已整体删除:
+ * 启动流程只剩 splash → env(环境网关) → 控制台;更新条/Toast/供应商弹窗保留在壳层。
+ */
+import { ref, onMounted, onBeforeUnmount } from "vue";
+import GeoOpsCenter from "./components/GeoOpsCenter.vue";
+import FaultBoundary from "./components/FaultBoundary.vue";
 import SplashScreen from "./components/SplashScreen.vue";
-import Onboarding from "./components/Onboarding.vue";
-import EnvDoctor from "./components/EnvDoctor.vue"; // 既是视图也是启动 env 网关，留静态
+import EnvDoctor from "./components/EnvDoctor.vue";
 import UpdateBanner from "./components/UpdateBanner.vue";
 import ToastHost from "./components/ToastHost.vue";
-import VoiceOverlay from "./components/VoiceOverlay.vue";
-import CommandPalette from "./components/CommandPalette.vue";
-import TaskCenter from "./components/TaskCenter.vue";
-import FaultBoundary from "./components/FaultBoundary.vue";
-import { useHotkeys } from "./composables/useHotkeys";
-import { installMarkdownDelegation } from "./lib/markdown";
-import { openUrl, onWsStatus, isTauri, files as fc } from "./tauri";
-import { toast } from "./composables/useToast";
-import { isLowSpec } from "./composables/useLowSpec";
-// ── 重 / 非首屏视图：懒加载，切到对应视图时才拉各自 chunk ──
-// 把 cytoscape(图谱) + 4 套工坊 + 各面板/弹层(合计上万行)从启动主包挪走 → 开窗快、首屏不卡。
-// KnowledgeGraph / SandboxStatus / 四工坊都有 defineOptions({name})，懒加载后 KeepAlive 仍按 name 缓存；
-// 其首次挂载本就被 ViewLoader 加载条盖住，chunk 拉取(本地 ms 级)一并被遮。
-// ChatPanel 也懒加载:它是最大的单体组件树(~142KB),静态导入会整棵进启动主包、
-// 首帧就要解析。异步化后主包先画出外壳,ChatPanel chunk 在 SplashScreen 的
-// 最短展示窗(MIN_MS=900ms,本地 chunk 拉取 ms 级)内加载完成,不会露出白屏帧。
-// 流式事件监听在 chatStore(app 级)注册,不依赖 ChatPanel 挂载时序。
-const ChatPanel = defineAsyncComponent(() => import("./components/ChatPanel.vue"));
-const KnowledgeGraph = defineAsyncComponent(() => import("./components/KnowledgeGraph.vue"));
-const SandboxStatus = defineAsyncComponent(() => import("./features/sandbox/components/SandboxStatus.vue"));
-const WikiBrowse = defineAsyncComponent(() => import("./components/WikiBrowse.vue"));
-const FileCenter = defineAsyncComponent(() => import("./components/FileCenter.vue"));
-const Automation = defineAsyncComponent(() => import("./components/Automation.vue"));
-const AutomationModal = defineAsyncComponent(() => import("./components/AutomationModal.vue"));
-const ExpertCenter = defineAsyncComponent(() => import("./components/ExpertCenter.vue"));
-const Settings = defineAsyncComponent(() => import("./components/Settings.vue"));
-const SenseApi = defineAsyncComponent(() => import("./components/SenseApi.vue"));
-const VoiceSettings = defineAsyncComponent(() => import("./components/VoiceSettings.vue"));
-const SkillCenter = defineAsyncComponent(() => import("./components/SkillCenter.vue"));
-const AddProviderModal = defineAsyncComponent(() => import("./components/AddProviderModal.vue"));
-const WorkflowPackModal = defineAsyncComponent(() => import("./components/WorkflowPackModal.vue"));
-const UsageBoard = defineAsyncComponent(() => import("./components/UsageBoard.vue"));
-const UpdatePanel = defineAsyncComponent(() => import("./components/UpdatePanel.vue"));
-const FeishuSettings = defineAsyncComponent(() => import("./components/FeishuSettings.vue"));
-const VideoCourseStudio = defineAsyncComponent(() => import("./components/VideoCourseStudio.vue"));
-// 自媒体运营中心 = GeoOpsCenter（设计稿 v2 深色控制台，整屏态见下方 .shell.geo-full）。
-// 数据看板并入其子标签（总控 → 数据看板）；旧的 MediaOps/MediaOpsCenter/MediaDashboard 已删。
-const GeoOpsCenter = defineAsyncComponent(() => import("./components/GeoOpsCenter.vue"));
-// 「让 AI 更懂你」向导常驻 App 级:首次打开才拉 chunk,之后保持挂载 → 扫描/归类跑着时
-// 用户可转后台、切视图、最小化窗口都不丢进度(组件不卸载,事件监听与状态都还在)。
-const OnboardingWizard = defineAsyncComponent(() => import("./components/OnboardingWizard.vue"));
+import AddProviderModal from "./components/AddProviderModal.vue";
 import { checkForUpdate } from "./composables/useUpdater";
-import { useAppStore, type ViewKey } from "./stores/app";
-import { useArtifactsStore } from "./stores/artifacts";
+import { onWsStatus, isTauri, invoke } from "./tauri";
 import { useProvidersStore } from "./stores/providers";
-import { useChatStore } from "./stores/chat";
-import { useWorkflowsStore } from "./stores/workflows";
-import { useAutomationStore } from "./stores/automation";
-import { useWizardStore } from "./stores/wizard";
-import { useFileTasksStore } from "./stores/fileTasks";
-import { useProjectsStore } from "./stores/projects";
 
-const app = useAppStore();
-const artifacts = useArtifactsStore();
 const providers = useProvidersStore();
-const chatStore = useChatStore();
-const workflows = useWorkflowsStore();
-const automation = useAutomationStore();
-const wiz = useWizardStore();
-const tasks = useFileTasksStore();
-const projectsStore = useProjectsStore();
-// 首次打开向导后就保持挂载(不再卸载),让后台扫描/归类跨视图、跨最小化持续推进。
-const wizMounted = ref(false);
-watch(
-  () => wiz.open,
-  (o) => {
-    if (o) wizMounted.value = true;
-  },
-);
 
-// ─────────── 重视图切换的"点击即缓冲"加载条 ───────────
-// 点击图谱/沙箱(且首次=未被 KeepAlive 暖过)时：先立刻亮加载条(此刻重组件尚未挂载，
-// 能马上画出来) → 等两帧画出后再挂载重组件(建图 / 9 数字人挂载的卡顿被盖在条下) →
-// 组件 ready(图谱布局稳定 / 沙箱画好)后淡出。已暖的重视图直接秒切，不再亮条。
-const HEAVY: ViewKey[] = ["graph", "sandbox"];
-const warmed = ref<Set<ViewKey>>(new Set());
-const mountedView = ref<ViewKey>(app.view); // 真正挂载的视图（重视图冷启时滞后两帧）
-const switchLoader = ref<ViewKey | null>(null); // 当前加载条覆盖的重视图
-let loaderSafety: number | undefined;
-
-watch(
-  () => app.view,
-  (next) => {
-    if (HEAVY.includes(next) && !warmed.value.has(next)) {
-      switchLoader.value = next; // 点击瞬间亮条
-      clearTimeout(loaderSafety);
-      loaderSafety = window.setTimeout(() => {
-        if (switchLoader.value === next) switchLoader.value = null;
-      }, 4500); // 兜底：ready 没来也不卡住
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          if (app.view !== next) return; // 这两帧里用户又切走了
-          mountedView.value = next; // 现在才挂载重视图
-          warmed.value.add(next);
-        })
-      );
-    } else {
-      mountedView.value = next;
-      switchLoader.value = null;
-    }
-  }
-);
-
-function onViewReady(v: ViewKey) {
-  if (switchLoader.value === v) switchLoader.value = null;
-}
-
-// 开机续建索引 ——「默认关闭」。
-// 为什么默认不自动跑:后台向量嵌入会长时间持有 SQLite 写事务,期间任何读命令(总览/晨报/
-// 检索)若在 UI 主线程上撞到写锁,会等 busy_timeout(最长 20s),主线程消息泵停摆 → 被
-// Windows 判「无响应」强杀(用户反馈的「开机没多久就卡死」)。把它从「开机自动」改成
-// 「纯手动」:用户要让 AI 检索更聪明,就去文件中心点「建索引」(任务中心可见、可随时停),
-// 自己掌控什么时候让机器吃这份重活,而不是一开机就被动卡。
-// 想恢复旧的「开机静默续建」行为的高级用户可设 localStorage.polaris.indexAutoResume="1"。
-async function autoBuildIndexOnStartup() {
-  try {
-    // 默认:开机不碰索引(连总览都不读,启动最轻)。仅显式开了开关才走旧行为。
-    if (localStorage.getItem("polaris.indexAutoResume") !== "1") return;
-    // 用户在任务中心主动「停止」过索引 → 记住,开机不再自动续建,直到他手动再点建索引。
-    if (localStorage.getItem("polaris.indexAutoPaused") === "1") return;
-    const ov = await fc.overview(null);
-    if (ov.indexing || ov.scanning) return; // 已经在跑,别重复
-    // 没配嵌入服务商时向量索引无可续建(FTS 倒排首轮已一遍建完),不必每次开机空跑 + 误报。
-    if (!ov.hasEmbedProvider) return;
-    const pending = (ov.textFiles ?? 0) - (ov.embeddedFiles ?? 0);
-    if ((ov.totalFiles ?? 0) === 0 || pending <= 0) return; // 没盘点过 / 全嵌完 → 不打扰
-    window.setTimeout(() => {
-      void tasks.startIndex();
-      toast.info(`索引正在后台构建(约 ${pending.toLocaleString()} 个文件待处理)· 完成后 AI 检索更聪明,可放着不管`);
-    }, 3000);
-  } catch {
-    /* 浏览器/降级模式或总览读取失败 → 安静跳过 */
-  }
-}
-
-// 多开核心：app 级注册一次流式监听，任意对话的事件都按 conversationId 路由进各自缓冲，
-// 这样切走/未挂载 ChatPanel 时后台任务仍持续流式推进、完成有提醒。
-let unMdDelegate: (() => void) | null = null;
-let unWsStatus: (() => void) | null = null;
-// 周期性内存兜底:App 是全程挂载的根组件,WebView 可连开数周。即便用户从不切对话/不切后台
-// (visibilitychange 兜底永远不触发),也每 5 分钟主动收一次 LRU,杜绝长周期内存缓慢爬升。
-// trimMemory 只回收陈旧、非发送中的对话,纯回收无副作用。
-let trimTimer: number | undefined;
-onMounted(() => {
-  // 低配机(内存小/核少/已开减少动效)标记:CSS 据 [data-lowspec] 停掉极光漂移等
-  // 装饰动画,把 GPU/CPU 留给正事。navigator 探测,零后端往返。
-  if (isLowSpec) document.documentElement.setAttribute("data-lowspec", "1");
-  // 开屏就绪信号:外壳已挂载、首帧可交互 → 允许开屏在最短展示时间后即淡出。
-  splashReady.value = true;
-  chatStore.init();
-  // 文件中心长任务(盘点/建索引/智能归类/AI 整理名称)的全局事件监听:App 级注册一次,
-  // 脱离任何视图生命周期 → 在文件中心点了任务后切走/关掉该视图,进度照常推进、回来即见,
-  // 全局任务中心浮层也据此随处显示「还在跑」。
-  tasks.ensureListeners();
-  // 向量索引「默认不开机自启」(见 autoBuildIndexOnStartup 注释):后台嵌入持写锁会让主线程
-  // 读命令卡 busy 锁 → 窗口无响应被强杀。建索引改纯手动(文件中心点「建索引」)。这里仅在
-  // 用户显式开了 polaris.indexAutoResume 开关时才走旧的开机续建,默认是个立即返回的空操作。
-  void autoBuildIndexOnStartup();
-  // markdown 区域事件委托(代码复制/展开/外链系统浏览器打开),全 v-html 区域一次覆盖
-  unMdDelegate = installMarkdownDelegation(document, (url) => {
-    openUrl(url).catch(() => {});
-  });
-  // Docker/Web 模式:WS 断线 → 顶部细条提示(自动重连由 tauri.ts 负责)
-  if (!isTauri) unWsStatus = onWsStatus((ok) => (wsDown.value = !ok));
-  // 内存治理「最后保险」:App 被切到后台(最小化 / 切窗 / 标签页隐藏)是天然的空闲点,
-  // 此刻主动把对话气泡缓存收回到 LRU 上限。visibilitychange 在 WKWebView(Mac)/
-  // WebView2(Win)/浏览器(Docker)三端都可靠触发,纯回收无副作用(切回时按需重取)。
-  document.addEventListener("visibilitychange", onVisibilityTrim);
-  trimTimer = window.setInterval(() => {
-    try {
-      chatStore.trimMemory?.();
-    } catch {
-      /* 收回失败不影响应用运行,静默跳过,等下一个周期 */
-    }
-  }, 5 * 60 * 1000);
-});
-function onVisibilityTrim() {
-  if (document.visibilityState === "hidden") chatStore.trimMemory();
-}
-onBeforeUnmount(() => {
-  unMdDelegate?.();
-  unWsStatus?.();
-  if (trimTimer !== undefined) clearInterval(trimTimer);
-  clearTimeout(loaderSafety);
-  window.removeEventListener("mousemove", onAuroraPointer);
-  document.removeEventListener("visibilitychange", onVisibilityTrim);
-  if (edgeRaf) cancelAnimationFrame(edgeRaf);
-});
-
-// ─────────── 极光主题：彩虹边框高光跟随鼠标方位游走 ───────────
-// mousemove 用 rAF 合帧(一帧最多算一次)，把鼠标相对主面板中心的方位角写进
-// CSS 变量 --edge-angle，style.css 里的 conic 亮带就锚在该方位 → 边框上那一段亮起。
-// 仅极光两套主题挂监听；切走主题即摘掉，零常驻开销。
-let mainEl: HTMLElement | null = null;
-let edgeRaf = 0;
-let edgePx = 0;
-let edgePy = 0;
-function flushEdge() {
-  edgeRaf = 0;
-  mainEl ||= document.querySelector(".main");
-  if (!mainEl) return;
-  const r = mainEl.getBoundingClientRect();
-  const cx = r.left + r.width / 2;
-  const cy = r.top + r.height / 2;
-  // conic 0deg 指向正上、顺时针递增；atan2 0 指向右(屏幕 y 向下) → +90° 对齐
-  const deg = (Math.atan2(edgePy - cy, edgePx - cx) * 180) / Math.PI + 90;
-  mainEl.style.setProperty("--edge-angle", `${deg.toFixed(1)}deg`);
-}
-function onAuroraPointer(e: MouseEvent) {
-  edgePx = e.clientX;
-  edgePy = e.clientY;
-  if (!edgeRaf) edgeRaf = requestAnimationFrame(flushEdge);
-}
-const isAurora = computed(
-  () => app.theme === "aurora-light" || app.theme === "aurora-dark"
-);
-watch(
-  isAurora,
-  (on) => {
-    if (on) {
-      window.addEventListener("mousemove", onAuroraPointer, { passive: true });
-    } else {
-      window.removeEventListener("mousemove", onAuroraPointer);
-      if (edgeRaf) {
-        cancelAnimationFrame(edgeRaf);
-        edgeRaf = 0;
-      }
-    }
-  },
-  { immediate: true }
-);
-
-// 全局快捷键:Ctrl+N 新对话 / Ctrl+K 命令面板 / Ctrl+B 收侧栏
-useHotkeys();
-
+// Docker/Web 模式:WS 断线 → 顶部细条提示(自动重连由 tauri.ts 负责)
 const wsDown = ref(false);
+let unWsStatus: (() => void) | null = null;
 
-// 启动流程：splash(每次) → onboarding(仅首次) → env(环境检测,健康则无感放行) → ready
-const ONBOARDED_KEY = "polaris.onboarded.v1";
-const phase = ref<"splash" | "onboarding" | "env" | "ready">("splash");
-// 新用户(本次刚走完初始引导)首开:ready 后直接落地「文件中心」并拉起智能向导(可跳过)。
-// onOnboardingDone 只在 polaris.onboarded.v1 缺失时触发,正是「全新用户」的精确信号 ——
-// 老用户(已 onboarded)走 splash→env→ready,routeFcWizard 始终 false,不打扰、不改落地视图。
-const routeFcWizard = ref(false);
-
-// 开屏「就绪即放行」信号：外壳挂载完成即置 true（真正的重活都在后台线程，
-// 首帧已可交互）→ 开屏只在防闪的最短展示时间后即淡出，不再硬等固定时长。
+// 启动流程:splash(每次) → env(环境检测,健康则无感放行) → ready
+const phase = ref<"splash" | "env" | "ready">("splash");
+// 开屏「就绪即放行」信号:外壳挂载完成即置 true → 开屏只在防闪的最短展示时间后即淡出
 const splashReady = ref(false);
 
-function onSplashDone() {
-  const done = localStorage.getItem(ONBOARDED_KEY);
-  phase.value = done ? "env" : "onboarding";
-}
-function onOnboardingDone() {
-  routeFcWizard.value = true;
-  phase.value = "env";
-}
+onMounted(() => {
+  splashReady.value = true;
+  if (isTauri) {
+    // 原生标题栏染成控制台底色(Win11 生效,Win10 静默跳过);取自 geo.css 的 --bg/--ink
+    invoke("set_titlebar_color", { caption: "#f5f6fa", text: "#1c2233" }).catch(() => {});
+  } else {
+    unWsStatus = onWsStatus((ok) => (wsDown.value = !ok));
+  }
+});
+onBeforeUnmount(() => unWsStatus?.());
+
 function onEnvDone() {
   phase.value = "ready";
-  // 全新用户:进文件中心 + 自动开「让 AI 更懂你」向导(向导自带「跳过」)。
-  if (routeFcWizard.value) {
-    routeFcWizard.value = false;
-    app.setView("file_center");
-    wiz.openWizard();
-  }
-  // splash → onboarding → env 全部完成后，再检查更新（避免弹窗被盖住）
+  // splash → env 全部完成后再检查更新(避免弹窗被盖住)
   checkForUpdate();
-}
-
-// 预览成品文件时把右侧抽屉拓宽；展开模式更宽，让观看更好看。
-// 用户在收缩条上拖过的宽度（drawerWidths）优先于自适应默认档位。
-const drawerTrack = computed(() => {
-  const w = app.drawerWidths;
-  if (artifacts.current) {
-    if (artifacts.expanded) {
-      return w.expand ? `min(${w.expand}px, 92vw)` : "min(1040px, 72vw)";
-    }
-    return w.preview ? `min(${w.preview}px, 80vw)` : "clamp(400px, 36vw, 560px)";
-  }
-  // 运行中的项目预览（内嵌应用）同样需要宽面板，别挤在 300px 里
-  if (projectsStore.activeRoot) {
-    return w.preview ? `min(${w.preview}px, 80vw)` : "clamp(400px, 36vw, 560px)";
-  }
-  return `${app.drawerWidth}px`;
-});
-
-// GEO 运营中心是按「整屏控制台」画的设计稿（自带三排顶栏与品牌区，无侧栏）。
-// 挤进 shell 的中间一列会让它跟 Polaris 侧栏/品牌区打架，故这一视图独占全窗，
-// 侧栏收成 0 轨；回 Polaris 走控制台顶栏里的返回键。
-const geoFull = computed(() => mountedView.value === "media_ops");
-
-const layoutCols = computed(() =>
-  geoFull.value
-    ? `0px 1fr ${drawerTrack.value}`
-    : `${app.sidebarWidth}px 1fr ${drawerTrack.value}`
-);
-
-// ── 侧栏宽度拖拽(分隔条) ──
-const sbDragging = ref(false);
-function startSbDrag(e: MouseEvent) {
-  if (app.sidebarCollapsed) return;
-  sbDragging.value = true;
-  const startX = e.clientX;
-  const startW = app.sidebarWidth;
-  // 用 rAF 合帧：mousemove 可能一帧来好几个,只在每帧画前应用最后一次宽度,
-  // 把 grid 重排+侧栏 backdrop-filter 重算压到每帧一次；拖拽中不落盘(persist=false)。
-  let pending = startW;
-  let rafId = 0;
-  const flush = () => {
-    rafId = 0;
-    app.setSidebarWidth(pending, false);
-  };
-  const move = (ev: MouseEvent) => {
-    pending = startW + ev.clientX - startX;
-    if (!rafId) rafId = requestAnimationFrame(flush);
-  };
-  const up = () => {
-    sbDragging.value = false;
-    if (rafId) cancelAnimationFrame(rafId);
-    app.setSidebarWidth(pending, true); // 松手落一次盘
-    window.removeEventListener("mousemove", move);
-    window.removeEventListener("mouseup", up);
-  };
-  window.addEventListener("mousemove", move);
-  window.addEventListener("mouseup", up);
 }
 </script>
 
 <template>
-  <div
-    class="shell"
-    :class="{ 'sb-drag': sbDragging || app.drawerResizing, 'geo-full': geoFull }"
-    :style="{ gridTemplateColumns: layoutCols }"
-  >
-    <!-- 极光琉璃画框主题：虚幻极光 + 颗粒背景层（fixed，居于全部内容之下，
-         内容面板不透明遮住中央 → 极光只在画框带透出；浅/深两版共用） -->
-    <template v-if="app.theme === 'aurora-light' || app.theme === 'aurora-dark'">
-      <div class="aurora" aria-hidden="true">
-        <span class="a1"></span><span class="a2"></span><span class="a3"></span><span class="a4"></span><span class="a5"></span>
-      </div>
-      <div class="grain" aria-hidden="true"></div>
-    </template>
-    <Sidebar />
-    <main class="main">
-      <!-- 侧栏宽度拖拽分隔条 -->
-      <div
-        v-if="!app.sidebarCollapsed && !geoFull"
-        class="sb-resizer"
-        title="拖拽调节侧栏宽度"
-        @mousedown.prevent="startSbDrag"
-      ></div>
-      <!-- 重视图(图谱/沙箱)用 KeepAlive 缓存：第一次进算一次，之后切走再回来瞬开，
-           且离开时其动画/自转随 DOM 脱离自动暂停，不在后台空耗。其余视图照常按需挂载。
-           四个工坊也缓存：生成/修改是多轮流程(phase/convId/产物预览都在组件态里)，
-           切去对话看进度再切回来必须还能「继续修改」，销毁重建=流程报废。
-           mountedView 让重视图冷启时滞后两帧挂载，先把加载条画出来再扛卡顿。 -->
-      <!-- 故障舱壁:任一功能视图在渲染/生命周期抛错时,只把当前视图换成可重试卡片,
-           绝不让异常冒泡到 app 根白屏 → 侧栏/任务中心/右抽屉及其它功能键照常可用。
-           viewKey 让它感知视图切换并在切走时自愈(再切回=自动重试)。 -->
-      <FaultBoundary :view-key="mountedView">
-      <KeepAlive :include="['KnowledgeGraph', 'SandboxStatus', 'GeoOpsCenter', 'VideoCourseStudio']">
-        <ChatPanel v-if="mountedView === 'chat'" />
-        <WikiBrowse v-else-if="mountedView === 'wiki'" />
-        <FileCenter v-else-if="mountedView === 'file_center'" />
-        <Automation v-else-if="mountedView === 'automation'" />
-        <KnowledgeGraph
-          v-else-if="mountedView === 'graph'"
-          @ready="onViewReady('graph')"
-        />
-        <SandboxStatus
-          v-else-if="mountedView === 'sandbox'"
-          @ready="onViewReady('sandbox')"
-        />
-        <ExpertCenter v-else-if="mountedView === 'claude_md'" />
-        <SkillCenter v-else-if="mountedView === 'skill_center'" />
-        <EnvDoctor v-else-if="mountedView === 'env_doctor'" />
-        <UpdatePanel v-else-if="mountedView === 'update'" />
-        <FeishuSettings v-else-if="mountedView === 'feishu'" />
-        <Settings v-else-if="mountedView === 'settings'" />
-        <SenseApi v-else-if="mountedView === 'sense_api'" />
-        <VoiceSettings v-else-if="mountedView === 'voice_input'" />
-        <VideoCourseStudio v-else-if="mountedView === 'video_course'" />
-        <GeoOpsCenter v-else-if="mountedView === 'media_ops'" />
-      </KeepAlive>
-      </FaultBoundary>
-
-      <!-- 点击重视图即刻浮现的快速加载条（盖住挂载/建图卡顿） -->
-      <Transition name="vl">
-        <ViewLoader
-          v-if="switchLoader"
-          :dark="switchLoader === 'graph'"
-          :label="switchLoader === 'graph' ? '星河生成中' : '沙箱加载中'"
-        />
-      </Transition>
-    </main>
-    <!-- 右抽屉渲染用户产物预览(HTML/PPT/网页),是常见崩溃源;独立舱壁兜底,崩了不白屏整窗 -->
+  <div class="shell">
+    <!-- 控制台在 splash/env 覆盖层底下即挂载,数据边加载边被遮住;
+         故障舱壁兜底:渲染/生命周期抛错只换成可重试卡片,不白屏整窗 -->
     <FaultBoundary>
-      <RightDrawer />
+      <GeoOpsCenter />
     </FaultBoundary>
 
-    <!-- 自动更新提示条（发现新版本时浮出） -->
+    <!-- 自动更新提示条(发现新版本时浮出) + 全局 toast(统一通知出口) -->
     <UpdateBanner />
-
-    <!-- 全局 toast(统一通知出口) + Ctrl+K 命令面板 -->
     <ToastHost />
-    <VoiceOverlay />
-    <CommandPalette />
 
-    <!-- 全局任务中心:盘点/建索引/智能归类等后台任务,无论切到哪个视图都常驻可见、可点回去 -->
-    <TaskCenter />
-
+    <!-- 供应商添加/编辑弹窗(API 中心「切换中心」的添加/编辑入口) -->
+    <AddProviderModal v-if="providers.showAddModal" />
 
     <!-- Docker/Web 模式断线提示条 -->
     <div v-if="wsDown" class="ws-down">连接已断开,正在自动重连…</div>
 
-    <!-- 「让 AI 更懂你」引导向导(常驻;首次打开后保持挂载,转后台/切视图不丢进度) -->
-    <OnboardingWizard v-if="wizMounted" />
-
-    <AddProviderModal v-if="providers.showAddModal" />
-    <WorkflowPackModal v-if="workflows.editorOpen" />
-    <AutomationModal v-if="automation.editorOpen" />
-    <UsageBoard v-if="providers.showUsageBoard" />
-
-
-    <!-- 启动流程覆盖层：splash → onboarding -->
+    <!-- 启动流程覆盖层:splash → env -->
     <Transition name="splash-fade">
-      <SplashScreen v-if="phase === 'splash'" :ready="splashReady" @done="onSplashDone" />
-    </Transition>
-    <Transition name="onboard-fade">
-      <Onboarding v-if="phase === 'onboarding'" @done="onOnboardingDone" />
+      <SplashScreen v-if="phase === 'splash'" :ready="splashReady" @done="phase = 'env'" />
     </Transition>
     <Transition name="onboard-fade">
       <EnvDoctor v-if="phase === 'env'" gate @done="onEnvDone" />
@@ -454,82 +74,11 @@ function startSbDrag(e: MouseEvent) {
 </template>
 
 <style scoped>
-/* 连屏一体化边框（仿 Codex）：整个 shell 是一块连续的框面（侧栏+顶部+四周同色），
-   主区/右抽屉是嵌在框里的圆角面板 —— 上边框与左边框在面板左上圆角处汇合 */
 .shell {
   height: 100vh;
-  display: grid;
-  background: var(--bg-side);
-  /* 外圈四角倒圆：消除左上角（内容与标题栏交汇处）的正方形棱角，整窗只剩圆角 */
-  border-radius: 12px;
   overflow: hidden;
-  transition: grid-template-columns 180ms ease;
-}
-/* 拖宽时关过渡,否则跟手延迟 */
-.shell.sb-drag {
-  transition: none;
-  user-select: none;
-  cursor: col-resize;
-}
-.sb-resizer {
-  position: absolute;
-  left: -3px;
-  top: 0;
-  bottom: 0;
-  width: 6px;
-  z-index: 30;
-  cursor: col-resize;
-}
-.sb-resizer:hover {
-  background: var(--primary-soft);
-}
-/* 黑夜模式（仿 Codex）：中性石墨框面，无辉光 */
-html[data-theme="dark"] .shell {
-  background: var(--bg-side);
-}
-.main {
-  position: relative;
-  overflow: hidden;
-  background: var(--bg-chat);
   display: flex;
   flex-direction: column;
-  /* 圆润嵌入面板：四周均匀留出框面缝隙（含左侧，避免与侧栏齐平相撞出菱角接缝），
-     面板呈干净的悬浮圆角卡，与染色标题栏组成连屏框面 */
-  margin: 8px;
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-}
-/* GEO 运营中心整屏态：侧栏让位，主区脱掉「嵌入圆角面板」那身外壳，
-   让设计稿自己的三排顶栏顶到窗沿 —— 控制台即整个窗口。 */
-/* 侧栏收成零宽而非 display:none —— 后者会把它从 grid 自动排布里摘掉，
-   .main 会顶替到第 1 条(0px)轨道上去,整个控制台被压成零宽。 */
-.shell.geo-full :deep(.sb) {
-  width: 0;
-  min-width: 0;
-  /* padding 也要清零：.sb 是 content-box,只设 width:0 仍会剩 16px 横向内边距,
-     溢出 0px 轨道盖在控制台左沿上。 */
-  padding: 0;
-  overflow: hidden;
-  border: none;
-  pointer-events: none;
-}
-.shell.geo-full .main {
-  margin: 0;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
-  background: transparent;
-}
-.placeholder {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted);
-  font-family: var(--serif);
-  font-size: 14px;
-  letter-spacing: 2px;
 }
 /* Docker/Web 模式 WS 断线提示条 */
 .ws-down {
@@ -548,7 +97,7 @@ html[data-theme="dark"] .shell {
 }
 </style>
 
-<!-- 非 scoped：Transition 类名需作用在子组件根元素上 -->
+<!-- 非 scoped:Transition 类名需作用在子组件根元素上 -->
 <style>
 .splash-fade-leave-active {
   transition: opacity 0.8s ease;

@@ -34,9 +34,10 @@ use polaris_runtime::procs::CHILDREN;
 
 /// 合法阶段名，顺序即执行顺序。
 const STAGE_GENERATE: &str = "generate";
+const STAGE_IMAGE: &str = "image";
 const STAGE_TYPESET: &str = "typeset";
 const STAGE_UPLOAD: &str = "upload";
-const ALL_STAGES: &[&str] = &[STAGE_GENERATE, STAGE_TYPESET, STAGE_UPLOAD];
+const ALL_STAGES: &[&str] = &[STAGE_GENERATE, STAGE_IMAGE, STAGE_TYPESET, STAGE_UPLOAD];
 
 /// 生成阶段的墙钟超时（秒）——卡住必须能放手，别永久钉死后台线程。
 const GENERATE_TIMEOUT_SECS: u64 = 420;
@@ -44,7 +45,11 @@ const GENERATE_TIMEOUT_SECS: u64 = 420;
 // ───────────────────────── 数据类型 ─────────────────────────
 
 /// 流程详情视图里的一格步骤（细粒度事件，按时间序追加）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// 归因字段（expert_id / skill_id / prompt …）是「点开可见全程留痕」的数据源：每一格都要
+/// 答得出「谁干的、用哪个技能、喂进去的提示词长什么样」。全部 `serde(default)`——老 job
+/// 快照没有这些字段，反序列化回来留空即可，UI 侧按空值降级显示。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobStep {
     /// 稳定 key：粗粒度用阶段名（generate/typeset/upload），
@@ -58,6 +63,50 @@ pub struct JobStep {
     #[serde(default)]
     pub detail: String,
     pub at: i64,
+
+    // ── 归因（留痕三问：哪个专家 / 哪个 skill / 什么提示词） ──
+    /// 编排里负责本环节的专家 id（来自 PlatformSettings.workflow，空=本步不由专家驱动）。
+    #[serde(default)]
+    pub expert_id: String,
+    /// 专家人话名（快照当时的名字，专家改名不影响历史留痕）。
+    #[serde(default)]
+    pub expert_name: String,
+    /// 编排里本环节挂的技能 id。
+    #[serde(default)]
+    pub skill_id: String,
+    /// 本步实际落地的技能脚本（upload 阶段是 py 文件绝对路径）。
+    #[serde(default)]
+    pub skill_script: String,
+    /// 喂给模型的提示词全文快照（仅 generate 有）。留全文而非 hash——
+    /// 原型的价值就在于点开能逐字看到当时到底喂了什么。
+    #[serde(default)]
+    pub prompt: String,
+    /// 快照当时该专家在本平台的 overlay 版本 id（evolution.rs 的 PromptVersion.id）。
+    /// 有值即可在详情里一键跳到那一版并回滚。
+    #[serde(default)]
+    pub prompt_version_id: String,
+    /// 专家卡上的推荐模型档。注意：generate 走 claude CLI 默认模型，未显式 --model 下发，
+    /// 故这里是「专家建议用什么」而非「实际跑的是什么」，UI 文案不许含混。
+    #[serde(default)]
+    pub model_hint: String,
+    /// 本步耗时（run → ok/fail 时算出；仍在跑或无起点则 0）。
+    #[serde(default)]
+    pub duration_ms: i64,
+    /// 本步开始时刻（算耗时用）。
+    #[serde(default)]
+    pub started_at: i64,
+}
+
+/// push_step 的归因附件。用 Default + 结构体字面量，避免给 push_step 加一长串位置参数。
+#[derive(Debug, Clone, Default)]
+pub struct StepAttr {
+    pub expert_id: String,
+    pub expert_name: String,
+    pub skill_id: String,
+    pub skill_script: String,
+    pub prompt: String,
+    pub prompt_version_id: String,
+    pub model_hint: String,
 }
 
 /// 一条投递流水线 job 的运行态快照（前端轮询用）。
@@ -193,23 +242,80 @@ fn update_job<F: FnOnce(&mut MediaJob)>(job_id: &str, f: F) {
 
 /// 记一格步骤：同 key 已存在则原位更新状态/说明（run→ok/fail），否则追加。
 fn push_step(job_id: &str, key: &str, label: &str, status: &str, detail: &str) {
+    push_step_attr(job_id, key, label, status, detail, StepAttr::default());
+}
+
+/// 带归因的记步。原位更新时归因只做「非空覆盖」：run 那一格已经写下了专家/提示词，
+/// 收尾的 ok/fail 传空 attr 不该把它们抹掉。
+fn push_step_attr(
+    job_id: &str,
+    key: &str,
+    label: &str,
+    status: &str,
+    detail: &str,
+    attr: StepAttr,
+) {
     update_job(job_id, |j| {
+        let now = now_secs();
         if let Some(s) = j.steps.iter_mut().rev().find(|s| s.key == key) {
             s.status = status.to_string();
             if !detail.is_empty() {
                 s.detail = detail.to_string();
             }
-            s.at = now_secs();
+            let set = |dst: &mut String, src: String| {
+                if !src.is_empty() {
+                    *dst = src;
+                }
+            };
+            set(&mut s.expert_id, attr.expert_id);
+            set(&mut s.expert_name, attr.expert_name);
+            set(&mut s.skill_id, attr.skill_id);
+            set(&mut s.skill_script, attr.skill_script);
+            set(&mut s.prompt, attr.prompt);
+            set(&mut s.prompt_version_id, attr.prompt_version_id);
+            set(&mut s.model_hint, attr.model_hint);
+            if s.started_at > 0 && status != "run" {
+                s.duration_ms = (now - s.started_at) * 1000;
+            }
+            s.at = now;
         } else {
             j.steps.push(JobStep {
                 key: key.to_string(),
                 label: label.to_string(),
                 status: status.to_string(),
                 detail: detail.to_string(),
-                at: now_secs(),
+                at: now,
+                expert_id: attr.expert_id,
+                expert_name: attr.expert_name,
+                skill_id: attr.skill_id,
+                skill_script: attr.skill_script,
+                prompt: attr.prompt,
+                prompt_version_id: attr.prompt_version_id,
+                model_hint: attr.model_hint,
+                duration_ms: 0,
+                started_at: now,
             });
         }
     });
+}
+
+/// 取某平台某环节的「谁 + 什么技能」，并把专家卡上的人话名 / 推荐模型一并带出。
+/// 编排里查无此环节时回空 attr——调用方照常记步，UI 侧显示「未编排」而非崩掉。
+fn attr_for(platform: &str, step: &str) -> StepAttr {
+    let Some(w) = crate::mediaops::workflow_step_for(platform, step) else {
+        return StepAttr::default();
+    };
+    let card = crate::expert::expert_card_by_id(&w.expert_id);
+    StepAttr {
+        expert_name: card
+            .as_ref()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| w.expert_id.clone()),
+        model_hint: card.map(|c| c.model_hint).unwrap_or_default(),
+        expert_id: w.expert_id,
+        skill_id: w.skill_id,
+        ..Default::default()
+    }
 }
 
 fn get_job(job_id: &str) -> Option<MediaJob> {
@@ -235,6 +341,8 @@ fn platform_cn(platform: &str) -> &'static str {
         "baijia" => "百家号",
         "bilibili" => "哔哩哔哩",
         "douyin" => "抖音",
+        "csdn" => "CSDN",
+        "juejin" => "掘金",
         _ => "自媒体平台",
     }
 }
@@ -243,9 +351,24 @@ fn platform_cn(platform: &str) -> &'static str {
 fn stage_label(stage: &str) -> &'static str {
     match stage {
         STAGE_GENERATE => "生成正文（Claude 主笔）",
+        STAGE_IMAGE => "配图（读文出画面描述 → AI 生成封面与插图）",
         STAGE_TYPESET => "排版（Markdown → 语义 HTML）",
         STAGE_UPLOAD => "投递草稿（平台后台）",
         _ => "未知阶段",
+    }
+}
+
+/// 执行面阶段 → 编排（PlatformSettings.workflow）里的环节名。
+///
+/// 两套「流程」概念的接缝：编排是 8 步声明式蓝图（选题/调研/写作/…/投递），执行面只跑
+/// 其中 3 步。这个映射就是把执行到的那 3 步认领回蓝图里的对应环节，好取出它配的专家。
+fn stage_workflow_step(stage: &str) -> &'static str {
+    match stage {
+        STAGE_GENERATE => "写作",
+        STAGE_IMAGE => "配图",
+        STAGE_TYPESET => "排版",
+        STAGE_UPLOAD => "投递",
+        _ => "",
     }
 }
 
@@ -415,7 +538,13 @@ fn markdown_to_semantic_html(md: &str) -> String {
             close_lists(&mut out, &mut in_ul, &mut in_ol);
             continue;
         }
-        if let Some(rest) = t.strip_prefix("### ") {
+        if t.starts_with("![") {
+            // 图片行：`![alt](src)` → <img>（配图阶段插入的本地文件路径）
+            close_lists(&mut out, &mut in_ul, &mut in_ol);
+            if let Some((alt, src)) = t.strip_prefix("![").and_then(|r| r.split_once("](")).map(|(a, b)| (a, b.trim_end_matches(')'))) {
+                out.push_str(&format!("<p><img src=\"{}\" alt=\"{}\" style=\"max-width:100%\"/></p>\n", src, alt));
+            }
+        } else if let Some(rest) = t.strip_prefix("### ") {
             close_lists(&mut out, &mut in_ul, &mut in_ol);
             out.push_str(&format!("<h3>{}</h3>\n", inline_md(rest)));
         } else if let Some(rest) = t.strip_prefix("## ") {
@@ -691,9 +820,32 @@ fn strip_code_fence(s: &str) -> String {
 
 // ───────────────────────── 阶段执行 ─────────────────────────
 
-/// generate：拼「主笔基础画像 + 平台补丁」系统设定 + 任务指令 → claude → 落 .md。
+/// generate：拼「写作专家基础画像 + 平台补丁」系统设定 + 任务指令 → claude → 落 .md。
+///
+/// 专家取自平台编排的「写作」环节（mediaops 设置里可改），不再硬编码 media-writer——
+/// 否则详情页里的「哪个专家」永远是同一个常量，留痕就成了摆设。编排缺「写作」环节时
+/// 回落 media-writer 并在日志里说明，保证老配置照跑。
 fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
-    let system = crate::expert::expert_media_doc("media-writer".to_string(), job.platform.clone());
+    let mut attr = attr_for(&job.platform, "写作");
+    if attr.expert_id.is_empty() {
+        log_line(log_path, "generate：平台编排里没有「写作」环节，回落 media-writer");
+        attr = StepAttr {
+            expert_id: "media-writer".to_string(),
+            expert_name: crate::expert::expert_card_by_id("media-writer")
+                .map(|c| c.name)
+                .unwrap_or_else(|| "自媒体主笔".to_string()),
+            ..Default::default()
+        };
+    }
+    let system = crate::expert::expert_media_doc(attr.expert_id.clone(), job.platform.clone());
+    // 留痕到具体版本：这一步用的是该专家在本平台的第几版补丁。
+    attr.prompt_version_id = crate::evolution::active_prompt_version(
+        &attr.expert_id,
+        &job.platform,
+        crate::evolution::ANCHOR_PLATFORM_OVERLAY,
+    )
+    .map(|v| v.id)
+    .unwrap_or_default();
     let cn = platform_cn(&job.platform);
     let topic = if job.topic.trim().is_empty() {
         "（未提供额外方向，按标题自行立意）".to_string()
@@ -717,8 +869,29 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
         topic = topic,
     );
 
-    log_line(log_path, &format!("generate：调 Claude 为「{cn}」写《{}》", job.title));
-    push_step(&job.id, "generate", stage_label(STAGE_GENERATE), "run", &format!("Claude 正在为「{cn}」写作…"));
+    log_line(
+        log_path,
+        &format!(
+            "generate：{}（{}）为「{cn}」写《{}》{}",
+            attr.expert_name,
+            attr.expert_id,
+            job.title,
+            if attr.prompt_version_id.is_empty() {
+                String::new()
+            } else {
+                format!("，补丁版本 {}", attr.prompt_version_id)
+            }
+        ),
+    );
+    // 提示词全文随步骤落盘——原型的核心就是点开这一格能逐字看到当时喂了什么。
+    push_step_attr(
+        &job.id,
+        "generate",
+        stage_label(STAGE_GENERATE),
+        "run",
+        &format!("{} 正在为「{cn}」写作…", attr.expert_name),
+        StepAttr { prompt: prompt.clone(), ..attr.clone() },
+    );
     let raw = run_claude_collect(&job.id, &prompt, log_path)?;
     let body = strip_code_fence(&raw);
     let words = body.chars().count();
@@ -770,6 +943,150 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// 配图阶段产物：封面 + 已插入正文的插图路径。
+#[derive(Debug, Default)]
+struct ImageAssets {
+    cover: Option<PathBuf>,
+    inline: Vec<PathBuf>,
+}
+
+/// image：配图导演（claude）通读正文自己决定画什么——输出封面 + 至多 2 张插图的画面
+/// 描述 JSON，再逐张调 ark_image.py（火山方舟 Seedream，密钥走 providers 体系）落 PNG；
+/// 插图按小标题就地插回 Markdown。**不写死任何画面 prompt**，全部由文本模型按文章内容定。
+fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageAssets, String> {
+    let article = std::fs::read_to_string(md_path).map_err(|e| format!("读文章失败：{e}"))?;
+    let excerpt: String = article.chars().take(4000).collect();
+
+    let mut attr = attr_for(&job.platform, "配图");
+    if attr.expert_id.is_empty() {
+        attr.expert_id = "media-imagedirector".to_string();
+        attr.expert_name = "配图导演".to_string();
+    }
+    let system = crate::expert::expert_media_doc(attr.expert_id.clone(), job.platform.clone());
+    let cn = platform_cn(&job.platform);
+    let prompt = format!(
+        "{system}\n\n---\n\n# 配图任务\n\n\
+你是本文的配图导演。通读下面这篇将发布到「{cn}」的文章，**由你自己判断**封面和插图各画什么。\n\n\
+输出硬性要求：只输出一个 JSON 对象，不要任何解释、不要代码围栏。结构：\n\
+{{\"cover\": \"封面画面描述\", \"inline\": [{{\"heading\": \"要插图的小标题原文\", \"prompt\": \"插图画面描述\"}}]}}\n\
+- cover 必填：一句 60–120 字的中文画面描述，包含主体、构图、色调、风格，画面里**不出现任何文字**；\n\
+- inline 选填 0–2 张：heading 必须逐字取自正文里的某个 `## 小标题`；\n\
+- 画面内容必须来自文章的具体信息点，不许套通用模板。\n\n\
+# 文章全文\n\n{excerpt}\n",
+    );
+
+    push_step_attr(
+        &job.id,
+        STAGE_IMAGE,
+        stage_label(STAGE_IMAGE),
+        "run",
+        &format!("{} 通读正文，构思封面与插图…", attr.expert_name),
+        StepAttr { prompt: prompt.clone(), ..attr.clone() },
+    );
+
+    // 1) 文本模型出画面描述（解析失败降级：用标题兜一个封面描述，不断流）
+    let mut cover_prompt = String::new();
+    let mut inline_plans: Vec<(String, String)> = Vec::new();
+    match run_claude_collect(&job.id, &prompt, log_path) {
+        Ok(raw) => {
+            let cleaned = strip_code_fence(&raw);
+            let json_str = cleaned
+                .find('{')
+                .and_then(|s| cleaned.rfind('}').map(|e| &cleaned[s..=e]))
+                .unwrap_or(cleaned.as_str());
+            match serde_json::from_str::<serde_json::Value>(json_str) {
+                Ok(v) => {
+                    cover_prompt = v["cover"].as_str().unwrap_or("").trim().to_string();
+                    if let Some(arr) = v["inline"].as_array() {
+                        for it in arr.iter().take(2) {
+                            let h = it["heading"].as_str().unwrap_or("").trim().to_string();
+                            let p = it["prompt"].as_str().unwrap_or("").trim().to_string();
+                            if !h.is_empty() && !p.is_empty() {
+                                inline_plans.push((h, p));
+                            }
+                        }
+                    }
+                    log_line(log_path, &format!(
+                        "image：配图导演出稿——封面 1 张，插图 {} 张", inline_plans.len()
+                    ));
+                }
+                Err(e) => log_line(log_path, &format!("image：画面描述 JSON 解析失败（{e}），降级标题兜底")),
+            }
+        }
+        Err(e) => log_line(log_path, &format!("image：配图导演调用失败（{e}），降级标题兜底")),
+    }
+    if cover_prompt.is_empty() {
+        cover_prompt = format!(
+            "为一篇题为《{}》的文章设计主题封面插画：画面主体紧扣标题含义，构图简洁、层次分明、色调统一，画面中不出现任何文字。",
+            job.title
+        );
+    }
+
+    // 2) 逐张调 ark_image.py 落盘
+    let python = resolve_python()?;
+    let (script_path, source) = resolve_skill_script("media-publisher", "ark_image.py")?;
+    log_line(log_path, &format!("image：生图脚本 {}（{source}）", script_path.display()));
+    let gen_one = |img_prompt: &str, out: &Path, size: &str, tag: &str| -> Result<(), String> {
+        log_line(log_path, &format!("image：生成{tag}——{img_prompt}"));
+        let out_s = out.to_string_lossy().to_string();
+        let output = Command::new(&python)
+            .arg(&script_path)
+            .args(["--prompt", img_prompt, "--out", out_s.as_str(), "--size", size])
+            .output()
+            .map_err(|e| format!("调起生图脚本失败：{e}"))?;
+        for line in String::from_utf8_lossy(&output.stdout).lines().chain(String::from_utf8_lossy(&output.stderr).lines()) {
+            if !line.trim().is_empty() {
+                log_line(log_path, &format!("  img> {line}"));
+            }
+        }
+        if output.status.success() && out.is_file() {
+            Ok(())
+        } else {
+            Err(format!("{tag}生成失败（exit={:?}）", output.status.code()))
+        }
+    };
+
+    let mut assets = ImageAssets::default();
+    let cover_out = md_path.with_extension("cover.png");
+    match gen_one(&cover_prompt, &cover_out, "2048x1152", "封面") {
+        Ok(()) => {
+            push_step(&job.id, "image:cover", "封面图", "ok", &format!("{}", cover_out.display()));
+            assets.cover = Some(cover_out);
+        }
+        Err(e) => push_step(&job.id, "image:cover", "封面图", "fail", &e),
+    }
+
+    // 3) 插图：生成成功的按小标题插回 Markdown
+    let mut md_new = article.clone();
+    for (i, (heading, p)) in inline_plans.iter().enumerate() {
+        let out = md_path.with_extension(format!("img{}.png", i + 1));
+        match gen_one(p, &out, "2048x1152", &format!("插图{}", i + 1)) {
+            Ok(()) => {
+                let anchor = format!("## {heading}");
+                if let Some(pos) = md_new.find(anchor.as_str()) {
+                    let line_end = md_new[pos..].find('\n').map(|o| pos + o + 1).unwrap_or(md_new.len());
+                    md_new.insert_str(line_end, &format!("\n![配图]({})\n", out.display()));
+                } else {
+                    md_new.push_str(&format!("\n\n![配图]({})\n", out.display()));
+                    log_line(log_path, &format!("image：正文未找到小标题「{heading}」，插图追加到文末"));
+                }
+                push_step(&job.id, &format!("image:i{}", i + 1), &format!("插图{}（{heading}）", i + 1), "ok", &format!("{}", out.display()));
+                assets.inline.push(out);
+            }
+            Err(e) => push_step(&job.id, &format!("image:i{}", i + 1), &format!("插图{}（{heading}）", i + 1), "fail", &e),
+        }
+    }
+    if md_new != article {
+        std::fs::write(md_path, &md_new).map_err(|e| format!("回写插图失败：{e}"))?;
+        log_line(log_path, "image：插图已插回正文 Markdown");
+    }
+
+    if assets.cover.is_none() && assets.inline.is_empty() {
+        return Err("封面与插图全部生成失败（详见日志 img> 行；可到 API 中心检查生图模型配置）".to_string());
+    }
+    Ok(assets)
+}
+
 /// typeset：仅公众号有实义——md → 语义 HTML body（供 wechat_yiban --body-file）。
 /// 其余平台空转（draft_uploader 直接吃 .md），返回 None 表示不改产物路径。
 fn stage_typeset(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<Option<PathBuf>, String> {
@@ -789,10 +1106,10 @@ fn stage_typeset(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<Opti
 }
 
 /// upload：spawn python 跑对应平台脚本，捕获输出进日志，按退出码判成败。
-fn stage_upload(job: &MediaJob, content_path: &Path, log_path: &Path) -> Result<String, String> {
+fn stage_upload(job: &MediaJob, content_path: &Path, assets: &ImageAssets, log_path: &Path) -> Result<String, String> {
     let python = resolve_python()?;
 
-    let (skill, script, args): (&str, &str, Vec<String>) = if job.platform == "wechat" {
+    let (skill, script, mut args): (&str, &str, Vec<String>) = if job.platform == "wechat" {
         (
             "wechat-md-typesetter",
             "wechat_yiban.py",
@@ -820,11 +1137,41 @@ fn stage_upload(job: &MediaJob, content_path: &Path, log_path: &Path) -> Result<
             ],
         )
     };
+    // 配图阶段的产物接到投递参数：公众号走 --cover；其余平台把封面+插图并进 --images。
+    if job.platform == "wechat" {
+        if let Some(c) = &assets.cover {
+            args.push("--cover".into());
+            args.push(c.to_string_lossy().to_string());
+        }
+    } else {
+        let imgs: Vec<String> = assets
+            .cover
+            .iter()
+            .chain(assets.inline.iter())
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        if !imgs.is_empty() {
+            args.push("--images".into());
+            args.push(imgs.join(","));
+        }
+    }
 
     let (script_path, source) = resolve_skill_script(skill, script)?;
     log_line(
         log_path,
         &format!("upload：脚本 {}（{source}）", script_path.display()),
+    );
+    // 留痕这一步真正落地的技能脚本：编排里配的 skill_id 是意图，这里是实际跑的那个文件。
+    push_step_attr(
+        &job.id,
+        STAGE_UPLOAD,
+        stage_label(STAGE_UPLOAD),
+        "run",
+        "",
+        StepAttr {
+            skill_script: format!("{}（{source}）", script_path.display()),
+            ..attr_for(&job.platform, "投递")
+        },
     );
 
     let mut cmd = Command::new(&python);
@@ -975,6 +1322,20 @@ fn run_job(job_id: String) {
 
     // 当前用于投递的内容路径：generate 产出 .md；typeset 可能改成 .html body。
     let mut content_path: Option<PathBuf> = job0.article_path.as_ref().map(PathBuf::from);
+    // 配图产物（跳过 image 阶段时按约定位置捡历史产物：正文旁的 .cover.png / .imgN.png）
+    let mut image_assets = ImageAssets::default();
+    if let Some(md) = &content_path {
+        let c = md.with_extension("cover.png");
+        if c.is_file() {
+            image_assets.cover = Some(c);
+        }
+        for i in 1..=2 {
+            let p = md.with_extension(format!("img{i}.png"));
+            if p.is_file() {
+                image_assets.inline.push(p);
+            }
+        }
+    }
 
     let fail = |job_id: &str, log_path: &Path, platform: &str, queue_id: &Option<String>, stage: &str, err: String| {
         log_line(log_path, &format!("{stage} 失败：{err}"));
@@ -1006,7 +1367,16 @@ fn run_job(job_id: String) {
             return;
         }
         update_job(&job_id, |j| j.stage = stage.clone());
-        push_step(&job_id, stage, stage_label(stage), "run", "");
+        // 开跑即写下归因：这一格由编排里的哪个专家 / 哪个技能负责。阶段函数随后会用更细的
+        // attr（提示词全文、脚本实际路径）原位补齐——非空覆盖，不会把这里写的抹掉。
+        push_step_attr(
+            &job_id,
+            stage,
+            stage_label(stage),
+            "run",
+            "",
+            attr_for(&job0.platform, stage_workflow_step(stage)),
+        );
 
         match stage.as_str() {
             STAGE_GENERATE => match stage_generate(&job0, &log_path) {
@@ -1028,6 +1398,36 @@ fn run_job(job_id: String) {
                     return fail(&job_id, &log_path, &job0.platform, &job0.queue_id, "generate", e);
                 }
             },
+            STAGE_IMAGE => {
+                let Some(md) = content_path.clone() else {
+                    return fail(
+                        &job_id,
+                        &log_path,
+                        &job0.platform,
+                        &job0.queue_id,
+                        "image",
+                        "缺正文（未先 generate 也未提供 article_path）".to_string(),
+                    );
+                };
+                // 配图失败不断流：留 fail 步骤与日志，正文照常排版投递（无封面时门禁自会拦公众号）。
+                match stage_image(&job0, &md, &log_path) {
+                    Ok(a) => {
+                        push_step(
+                            &job_id, stage, stage_label(stage), "ok",
+                            &format!(
+                                "封面 {} · 插图 {} 张",
+                                a.cover.as_ref().map(|c| c.display().to_string()).unwrap_or_else(|| "未生成".into()),
+                                a.inline.len()
+                            ),
+                        );
+                        image_assets = a;
+                    }
+                    Err(e) => {
+                        log_line(&log_path, &format!("image：{e}（不断流，继续后续阶段）"));
+                        push_step(&job_id, stage, stage_label(stage), "fail", &e);
+                    }
+                }
+            }
             STAGE_TYPESET => {
                 let Some(md) = content_path.clone() else {
                     return fail(
@@ -1063,7 +1463,7 @@ fn run_job(job_id: String) {
                         "缺正文（未先 generate 也未提供 article_path）".to_string(),
                     );
                 };
-                match stage_upload(&job0, &cp, &log_path) {
+                match stage_upload(&job0, &cp, &image_assets, &log_path) {
                     Ok(result) => {
                         log_line(&log_path, &format!("upload：成功（result={result}）"));
                         push_step(&job_id, stage, stage_label(stage), "ok", &format!("result={result}（草稿已推进到平台后台，窗口保留供预览）"));
@@ -1273,6 +1673,85 @@ pub fn media_job_article(job_id: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 编排 → 专家的查找必须回真值：这根线断了，详情页的「哪个专家」就退化成常量。
+    #[test]
+    fn attr_for_resolves_expert_from_workflow() {
+        let a = attr_for("wechat", "写作");
+        assert_eq!(a.expert_id, "media-writer");
+        assert!(!a.expert_name.is_empty(), "专家卡应带出人话名");
+        assert_ne!(a.expert_name, a.expert_id, "人话名不该回落成 id");
+        assert_eq!(a.skill_id, "media-pipeline-wechat");
+
+        // 公众号排版环节挂的是已内嵌的 wechat-md-typesetter（非占位）。
+        assert_eq!(attr_for("wechat", "排版").skill_id, "wechat-md-typesetter");
+        assert_eq!(attr_for("wechat", "投递").expert_id, "media-publisher");
+
+        // 执行面三阶段都能认领回蓝图里的环节。
+        for stage in ALL_STAGES {
+            let step = stage_workflow_step(stage);
+            assert!(!step.is_empty(), "{stage} 没映射到编排环节");
+            assert!(
+                !attr_for("wechat", step).expert_id.is_empty(),
+                "{stage}→{step} 在编排里查不到专家"
+            );
+        }
+
+        // 蓝图里没有的环节回空 attr，不 panic（调用方照常记步，UI 显示「未编排」）。
+        assert!(attr_for("wechat", "查无此环节").expert_id.is_empty());
+    }
+
+    /// 归因用非空覆盖：run 那格写下的提示词，不能被收尾的 ok/fail（传空 attr）抹掉。
+    #[test]
+    fn push_step_attr_merges_without_erasing_prompt() {
+        let job_id = "test-attr-merge";
+        JOBS.lock().insert(
+            job_id.to_string(),
+            MediaJob {
+                id: job_id.to_string(),
+                queue_id: None,
+                platform: "wechat".into(),
+                title: "t".into(),
+                topic: String::new(),
+                stages: vec![STAGE_GENERATE.into()],
+                status: "running".into(),
+                stage: String::new(),
+                steps: vec![],
+                article_path: None,
+                log_path: String::new(),
+                error: None,
+                created_at: now_secs(),
+                updated_at: now_secs(),
+            },
+        );
+
+        push_step_attr(
+            job_id,
+            "generate",
+            "生成",
+            "run",
+            "写作中",
+            StepAttr {
+                expert_id: "media-writer".into(),
+                expert_name: "主笔".into(),
+                prompt: "系统设定全文".into(),
+                ..Default::default()
+            },
+        );
+        // 收尾走老的 push_step（空 attr）——这是执行面里真实的调用序列。
+        push_step(job_id, "generate", "生成", "ok", "已落盘");
+
+        let steps = get_job(job_id).expect("job 应在册").steps;
+        assert_eq!(steps.len(), 1, "同 key 应原位更新而非追加");
+        let s = &steps[0];
+        assert_eq!(s.status, "ok");
+        assert_eq!(s.detail, "已落盘");
+        assert_eq!(s.prompt, "系统设定全文", "收尾不该抹掉 run 时记下的提示词");
+        assert_eq!(s.expert_name, "主笔");
+        assert!(s.started_at > 0, "首次记步应落起点，否则算不出耗时");
+
+        JOBS.lock().remove(job_id);
+    }
 
     #[test]
     fn slugify_keeps_alnum_and_cjk() {

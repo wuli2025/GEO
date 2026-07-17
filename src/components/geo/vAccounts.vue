@@ -14,6 +14,8 @@ const head = computed(() =>
 
 const statuses = ref<MediaAccountStatus[]>([]);
 const busy = ref<string | null>(null);
+const addingAccount = ref(false);
+const addPlatform = ref("wechat");
 
 async function loadStatus() {
   try {
@@ -128,7 +130,13 @@ const risk2Html = `<section><div class="card"><h3>多账号风控红线（写进
             </table>
           </div>
           <div style="margin-top: var(--space-xs); display: flex; gap: 8px; flex-wrap: wrap">
-            <button class="btn sm" data-toast="添加账号 → 选平台 → 起独立 profile 目录+分配 CDP 端口 → 开窗扫码">＋ 添加账号</button>
+            <button class="btn sm" title="选平台后开登录窗扫码即挂号（每平台一个主号；矩阵号待 --account 支持）" @click="addingAccount = !addingAccount">＋ 添加账号</button>
+            <template v-if="addingAccount">
+              <select v-model="addPlatform" class="inp" style="width:auto;padding:4px 8px">
+                <option v-for="r in rows" :key="r.pid" :value="r.pid">{{ r.pname }}</option>
+              </select>
+              <button class="btn sm" :disabled="!!busy" @click="openLogin(addPlatform); addingAccount = false">开登录窗扫码</button>
+            </template>
             <button class="btn sm ghost" @click="checkAll">全矩阵体检</button>
           </div>
           <p class="foot">主号养权重、发主稿；矩阵号发差异化变体。待接入平台（CSDN/掘金/视频号）接入后在此挂账号。</p>

@@ -223,6 +223,62 @@ jobs:
           make_latest: true
           files: dist/*
 
+      # ── 自托管分发（Cloudflare R2）─────────────────────────────
+      # 客户端 endpoints 第一顺位是 R2 上的 downloads/latest.json,updater.rs::mirror_candidates
+      # 下载安装包时也把它排第二(首个 github 镜像一卡死就切过来)。必须与 GitHub Release 同版本
+      # 同步,否则自托管源会一直供旧包。
+      #
+      # 用 R2 而非 Pages:Pages 单文件上限 25MiB,而 mac 的 .app.tar.gz 已 33MB(v0.1.0 实测)。
+      #
+      # 两个渠道共用同一份 latest.json(里面的 url 指向 github),自托管那一跳由客户端按文件名拼,
+      # 因此 R2 掉线/限流时客户端仍能回落 github,不会把自己锁死在单一渠道。
+      #
+      # 需在仓库 Secrets 配 CLOUDFLARE_API_TOKEN(Object Read & Write) 与 CLOUDFLARE_ACCOUNT_ID。
+      # 本仓是 public,github 匿名可下 → 没配 secret 时只 warning、不阻断发版(与教师助手那个
+      # private 仓不同,那边自托管是唯一活源所以必须红)。但 endpoints 首位会因此供旧包 → 别长期不配。
+      - name: Upload to Cloudflare R2
+        id: r2
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::warning::未配 CLOUDFLARE_API_TOKEN/ACCOUNT_ID,跳过 R2。endpoints 首位 geo-dl 将继续供旧版本,国内用户回落 github 镜像。"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # latest.json 最后传:装包先就位,避免「latest.json 已指新版、包还没上去」的空窗期。
+          for f in $(ls dist | grep -v '^latest.json$'); do
+            echo "→ $f"
+            npx --yes wrangler@4 r2 object put "geo-dist/downloads/$f" \
+              --file "dist/$f" --remote
+          done
+          npx --yes wrangler@4 r2 object put "geo-dist/downloads/latest.json" \
+            --file dist/latest.json --content-type application/json --remote
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+      # 自托管端点必须实测拿到「真 JSON 且版本号对得上」,而不是只看 HTTP 200。
+      # geo-dl 若未绑到 R2 桶而落到 Pages 站,任意路径都会回 200 + SPA 首页 HTML —— 只看状态码
+      # 会把这种静默失效当成功(llmwiki.cloud 就是这个行为,实测过)。所以这里解析 JSON 比版本号。
+      - name: Verify self-hosted endpoint
+        if: steps.r2.outputs.skipped == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          BASE="https://geo-dl.llmwiki.cloud/downloads"
+          ok=0
+          for i in 1 2 3 4 5; do
+            got=$(curl -fsSL --max-time 30 "$BASE/latest.json" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || echo "")
+            if [ "$got" = "$VERSION" ]; then echo "OK  $BASE/latest.json → $got"; ok=1; break; fi
+            echo "  retry $i: 期望 $VERSION, 实得 '${got:-<非JSON或不可达>}'"
+            sleep 5
+          done
+          [ "$ok" = "1" ] || { echo "::error::自托管端点 $BASE/latest.json 没返回版本 $VERSION 的合法 JSON(域名没绑 R2? 回了 HTML?)"; exit 1; }
+
       # 终验:latest.json 里的每个 url 必须真能下到二进制。
       # 光看 job 绿没用 —— v0.1.0 就是三个 job 全绿、Release 齐全,但 latest.json 的 url
       # 因文件名空格被规范化而全部 404,更新器静默失效。这里主动 HEAD 一遍,404 就把发版打红。

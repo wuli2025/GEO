@@ -17,6 +17,7 @@ export const GEO_LINE = { W: 920, H: 240, ml: 40, mr: 54, mt: 14, mb: 28 };
 export function stackedArea(d: AreaData, id: string): string {
   const { W, H, ml, mr, mt, mb } = GEO_AREA, iw = W - ml - mr, ih = H - mt - mb;
   const n = d.days.length;
+  if (n === 0) return `<p class="empty">暂无数据</p>`;
   const totals = d.days.map((_, i) => d.series.reduce((s, se) => s + se.v[i], 0));
   const max = Math.ceil(Math.max(...totals) / 500) * 500;
   const X = (i: number) => ml + (n === 1 ? iw / 2 : (i * iw) / (n - 1));
@@ -52,6 +53,7 @@ export function stackedArea(d: AreaData, id: string): string {
 export function lineChart(d: LineData, id: string): string {
   const { W, H, ml, mr, mt, mb } = GEO_LINE, iw = W - ml - mr, ih = H - mt - mb;
   const n = d.weeks.length, max = 10;
+  if (n === 0) return `<p class="empty">暂无数据</p>`;
   const X = (i: number) => ml + (i * iw) / (n - 1);
   const Y = (v: number) => mt + ih - (v / max) * ih;
   let g = "";

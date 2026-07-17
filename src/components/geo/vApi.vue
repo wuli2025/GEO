@@ -5,6 +5,9 @@ import { ark, type ArkConfig } from "../../tauri";
 import { toast } from "../../composables/useToast";
 import { title, vApiTierHtml } from "./render";
 import ProviderSwitch from "./ProviderSwitch.vue";
+// 生图模型配置面板(MiniMax / OpenAI / 豆包方舟 / 自定义):原挂在侧栏 ProviderDock,
+// 通用外壳删除后迁到这里 —— 生图通道子页即其唯一入口。
+import ImageProviderPanel from "../ImageProviderPanel.vue";
 
 const props = defineProps<{ sub: string; platform: string }>();
 
@@ -223,6 +226,14 @@ const imgCode = computed(
             <li>模型缺省 <code>doubao-seedream-4-5</code>；接口报「模型不存在/未开通」时脚本自动 GET /models 捞 seedream 系列挨个重试；</li>
             <li>无密钥时回退 HTML 模拟图（保底不断流）；密钥入 providers 体系而非裸环境变量。</li>
           </ul>
+        </div>
+      </section>
+
+      <!-- 生图模型配置（MiniMax / OpenAI / 豆包方舟 / 自定义 OpenAI 兼容通道） -->
+      <section style="margin-top: 16px">
+        <div class="card">
+          <h3>生图模型配置<span style="font-size: var(--text-xs); color: var(--muted); font-weight: 400">MiniMax / OpenAI / 豆包方舟 / 自定义</span></h3>
+          <ImageProviderPanel />
         </div>
       </section>
     </template>

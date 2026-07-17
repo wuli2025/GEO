@@ -468,6 +468,32 @@ pub fn evolution_delete(id: String) -> Result<(), String> {
 
 // ───────────────────────── Commands: prompt 版本树 ─────────────────────────
 
+/// 平台补丁在版本树里的锚点名。
+///
+/// 本模块开篇设想的细粒度锚点（style_notes / opening_formula）在代码里始终没有定义处——
+/// 专家文件里并无锚点标记，只有「整段平台补丁」这一个用户真能改的单元。故以整段为锚：
+/// 宁可锚粗一点是真的，也不要一个只存在于注释里的锚。
+pub const ANCHOR_PLATFORM_OVERLAY: &str = "platform_overlay";
+
+/// 查某专家某平台当前 active 的版本（执行面留痕：这一步用的是第几版提示词）。
+pub fn active_prompt_version(
+    expert_id: &str,
+    platform: &str,
+    anchor: &str,
+) -> Option<PromptVersion> {
+    STORE
+        .read()
+        .prompt_versions
+        .iter()
+        .find(|v| {
+            v.expert_id == expert_id
+                && v.platform == platform
+                && v.anchor == anchor
+                && v.status == "active"
+        })
+        .cloned()
+}
+
 /// 提交某专家某锚点的新版本：旧 active 版转 superseded，新版本号 = 最大版本 + 1。
 /// 返回新版本记录。真正写回专家 overlay 由调用方拿 content 再走 expert_media_overlay_set。
 #[cfg_attr(feature = "desktop", tauri::command)]

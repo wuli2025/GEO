@@ -6,7 +6,7 @@
 //! - **题库 Topic**：选题池，带状态机（pool→picked→drafted→published/rejected）。
 //! - **规划队列 QueueItem**：待发/在跑的稿件，带状态机（queued→running→draft_uploaded→done/failed）。
 //! - **平台设置 PlatformSettings**：每平台的开关 / 发送模式（ai 直传 vs manual 手动辅助）/
-//!   周配额 / 专家+技能编排的 workflow。首次加载 seed 7 平台默认工作流。
+//!   周配额 / 专家+技能编排的 workflow。首次加载 seed 9 平台默认工作流。
 //! - **度量事件 MetricEvent**：每次跑任务/出草稿/发布/失败落一条，滚动保留最近 500 条，
 //!   `mediaops_metrics_summary` 汇总成 7/30 天 KPI 与分平台 KPI。
 //!
@@ -23,9 +23,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // ───────────────────────── 平台表（全局统一，顺序固定） ─────────────────────────
 
-/// 7 平台 id，顺序与全项目契约一致。
+/// 9 平台 id，顺序与全项目契约一致。
 const PLATFORMS: &[&str] = &[
-    "wechat", "xhs", "zhihu", "toutiao", "baijia", "bilibili", "douyin",
+    "wechat", "xhs", "zhihu", "toutiao", "baijia", "bilibili", "douyin", "csdn", "juejin",
 ];
 
 // ───────────────────────── 数据类型 ─────────────────────────
@@ -168,7 +168,7 @@ pub struct MetricsSummary {
 /// 落盘结构 == 运营状态快照（同构，直接复用）。
 type MediaStore = MediaOpsState;
 
-/// 进程内 store 单例；首次访问时从磁盘加载 + seed 7 平台默认设置。
+/// 进程内 store 单例；首次访问时从磁盘加载 + seed 9 平台默认设置。
 static STORE: Lazy<RwLock<MediaStore>> = Lazy::new(|| RwLock::new(load_or_seed()));
 /// 串行化「读-改-写」磁盘，防并发命令交错撕裂 JSON（与 atomic_write 联合根治损坏）。
 static IO_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -239,6 +239,24 @@ fn default_workflow(platform: &str) -> Vec<WorkflowStep> {
         s("排版", "media-typesetter", typeset_skill(platform)),
         s("投递", "media-publisher", "media-publisher".to_string()),
     ]
+}
+
+/// 供执行面（media_engine）查询某平台的工作流编排——「哪个环节由哪个专家 + 哪个技能负责」
+/// 的唯一真相源。此前执行面把专家/脚本硬编码，UI 里配的编排是装饰性的；开放这个读口后
+/// 执行面按编排取人，流程详情里的「哪个专家」才是真值而非常量。
+pub fn workflow_for(platform: &str) -> Vec<WorkflowStep> {
+    STORE
+        .read()
+        .settings
+        .iter()
+        .find(|s| s.platform == platform)
+        .map(|s| s.workflow.clone())
+        .unwrap_or_else(|| default_workflow(platform))
+}
+
+/// 按环节名（"写作" / "排版" / "投递" …）取该平台编排的那一格。
+pub fn workflow_step_for(platform: &str, step: &str) -> Option<WorkflowStep> {
+    workflow_for(platform).into_iter().find(|w| w.step == step)
 }
 
 fn default_settings(platform: &str) -> PlatformSettings {

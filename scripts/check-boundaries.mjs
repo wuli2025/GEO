@@ -3,8 +3,6 @@
 //  R1 前端包源码形态: packages/*/package.json 一旦存在(editor/wiki 组件包拆出时),
 //     main 必须指向 .ts/.vue 源码且 vue 必须在 peerDependencies —— 预构建 dist 会
 //     打散 tree-shaking、复制 Vue 实例(v2 文档 §2 的唯一前端性能红线)。
-//  R2 巨石组件懒挂载: ArtifactEditor 必须经 defineAsyncComponent 挂载(独立 chunk
-//     出首屏, Phase 0 实测 gzip 省 33KB),禁止退回同步 import。
 //  R3 引擎同层禁互引(纵深防御): crates/ 各引擎 Cargo.toml 不得依赖同层引擎。
 //     编译器已经保证(path 依赖不存在则编不过),这里防的是"未来有人加上这行依赖"。
 import { readFileSync, readdirSync, existsSync } from "node:fs";
@@ -33,23 +31,7 @@ if (existsSync(pkgsDir)) {
   ok("R1 packages/ 尚未拆出组件包(拆出即自动生效)");
 }
 
-// ── R2 巨石组件懒挂载 ──
-const src = join(root, "src");
-let lazyHit = false, syncHit = [];
-const walk = (dir) => {
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
-    if (e.isDirectory()) { walk(p); continue; }
-    if (!/\.(vue|ts)$/.test(e.name)) continue;
-    const c = readFileSync(p, "utf8");
-    if (/defineAsyncComponent\([\s\S]{0,120}?ArtifactEditor\.vue/.test(c)) lazyHit = true;
-    if (/^\s*import\s+ArtifactEditor\s+from/m.test(c)) syncHit.push(p.slice(root.length + 1));
-  }
-};
-walk(src);
-if (lazyHit && syncHit.length === 0) ok("R2 ArtifactEditor 仅经 defineAsyncComponent 懒挂载");
-else if (!lazyHit) bad("R2 找不到 ArtifactEditor 的 defineAsyncComponent 挂载点");
-if (syncHit.length) bad(`R2 出现同步 import ArtifactEditor(会拖回首屏): ${syncHit.join(", ")}`);
+// (R2 巨石组件懒挂载检查已随 ArtifactEditor 一并删除 —— GEO 版只剩运营中心一个界面)
 
 // ── R3 引擎同层禁互引 ──
 const engines = ["polaris-fable", "polaris-forge", "polaris-collab", "polaris-sandbox"];
