@@ -51,10 +51,9 @@ const UsageBoard = defineAsyncComponent(() => import("./components/UsageBoard.vu
 const UpdatePanel = defineAsyncComponent(() => import("./components/UpdatePanel.vue"));
 const FeishuSettings = defineAsyncComponent(() => import("./components/FeishuSettings.vue"));
 const VideoCourseStudio = defineAsyncComponent(() => import("./components/VideoCourseStudio.vue"));
-// 自媒体运营中心已重构为 GeoOpsCenter（设计稿 v2 深色控制台）。
-// MediaOpsCenter.vue 保留在仓库中不删，仅不再引用。
+// 自媒体运营中心 = GeoOpsCenter（设计稿 v2 深色控制台，整屏态见下方 .shell.geo-full）。
+// 数据看板并入其子标签（总控 → 数据看板）；旧的 MediaOps/MediaOpsCenter/MediaDashboard 已删。
 const GeoOpsCenter = defineAsyncComponent(() => import("./components/GeoOpsCenter.vue"));
-const MediaDashboard = defineAsyncComponent(() => import("./components/MediaDashboard.vue"));
 const DeckStudio = defineAsyncComponent(() => import("./components/DeckStudio.vue"));
 const WebStudio = defineAsyncComponent(() => import("./components/WebStudio.vue"));
 // 「让 AI 更懂你」向导常驻 App 级:首次打开才拉 chunk,之后保持挂载 → 扫描/归类跑着时
@@ -305,8 +304,15 @@ const drawerTrack = computed(() => {
   return `${app.drawerWidth}px`;
 });
 
-const layoutCols = computed(
-  () => `${app.sidebarWidth}px 1fr ${drawerTrack.value}`
+// GEO 运营中心是按「整屏控制台」画的设计稿（自带三排顶栏与品牌区，无侧栏）。
+// 挤进 shell 的中间一列会让它跟 Polaris 侧栏/品牌区打架，故这一视图独占全窗，
+// 侧栏收成 0 轨；回 Polaris 走控制台顶栏里的返回键。
+const geoFull = computed(() => mountedView.value === "media_ops");
+
+const layoutCols = computed(() =>
+  geoFull.value
+    ? `0px 1fr ${drawerTrack.value}`
+    : `${app.sidebarWidth}px 1fr ${drawerTrack.value}`
 );
 
 // ── 侧栏宽度拖拽(分隔条) ──
@@ -341,7 +347,11 @@ function startSbDrag(e: MouseEvent) {
 </script>
 
 <template>
-  <div class="shell" :class="{ 'sb-drag': sbDragging || app.drawerResizing }" :style="{ gridTemplateColumns: layoutCols }">
+  <div
+    class="shell"
+    :class="{ 'sb-drag': sbDragging || app.drawerResizing, 'geo-full': geoFull }"
+    :style="{ gridTemplateColumns: layoutCols }"
+  >
     <!-- 极光琉璃画框主题：虚幻极光 + 颗粒背景层（fixed，居于全部内容之下，
          内容面板不透明遮住中央 → 极光只在画框带透出；浅/深两版共用） -->
     <template v-if="app.theme === 'aurora-light' || app.theme === 'aurora-dark'">
@@ -354,7 +364,7 @@ function startSbDrag(e: MouseEvent) {
     <main class="main">
       <!-- 侧栏宽度拖拽分隔条 -->
       <div
-        v-if="!app.sidebarCollapsed"
+        v-if="!app.sidebarCollapsed && !geoFull"
         class="sb-resizer"
         title="拖拽调节侧栏宽度"
         @mousedown.prevent="startSbDrag"
@@ -391,7 +401,6 @@ function startSbDrag(e: MouseEvent) {
         <VoiceSettings v-else-if="mountedView === 'voice_input'" />
         <VideoCourseStudio v-else-if="mountedView === 'video_course'" />
         <GeoOpsCenter v-else-if="mountedView === 'media_ops'" />
-        <MediaDashboard v-else-if="mountedView === 'media_dashboard'" />
         <DeckStudio v-else-if="mountedView === 'deck'" />
         <WebStudio v-else-if="mountedView === 'web_studio'" />
       </KeepAlive>
@@ -494,6 +503,27 @@ html[data-theme="dark"] .shell {
   border: 1px solid var(--hairline);
   border-radius: 12px;
   box-shadow: var(--shadow);
+}
+/* GEO 运营中心整屏态：侧栏让位，主区脱掉「嵌入圆角面板」那身外壳，
+   让设计稿自己的三排顶栏顶到窗沿 —— 控制台即整个窗口。 */
+/* 侧栏收成零宽而非 display:none —— 后者会把它从 grid 自动排布里摘掉，
+   .main 会顶替到第 1 条(0px)轨道上去,整个控制台被压成零宽。 */
+.shell.geo-full :deep(.sb) {
+  width: 0;
+  min-width: 0;
+  /* padding 也要清零：.sb 是 content-box,只设 width:0 仍会剩 16px 横向内边距,
+     溢出 0px 轨道盖在控制台左沿上。 */
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  pointer-events: none;
+}
+.shell.geo-full .main {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 .placeholder {
   flex: 1;

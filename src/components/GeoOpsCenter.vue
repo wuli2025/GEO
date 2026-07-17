@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
- * GEO 自媒体运营中心 · 新壳层（替换 media_ops 视图的渲染组件；MediaOpsCenter.vue 保留不删、不再引用）。
+ * GEO 自媒体运营中心 · media_ops 视图的唯一渲染组件（旧的 MediaOps/MediaOpsCenter/MediaDashboard 已删）。
+ * 本视图独占全窗：App.vue 的 .shell.geo-full 会把侧栏收成零宽，返回 Polaris 走 bar1 左侧的返回键。
  *
  * 严格按设计稿 v2：顶栏三排（bar1 三板块功能键 + 自建 SVG 图标；bar2 十平台门户切换器 + 健康条；
  * bar3 当前视图子标签）。深色控制台主题的全部 CSS 变量 scope 在 .geo-ops 下（geo/geo.css），
@@ -13,6 +14,7 @@ import {
 } from "./geo/data";
 import { chartTip } from "./geo/charts";
 import { toast } from "../composables/useToast";
+import { useAppStore } from "../stores/app";
 
 import vDashboard from "./geo/vDashboard.vue";
 import vApprovals from "./geo/vApprovals.vue";
@@ -36,6 +38,10 @@ const VIEW_COMPONENTS: Record<string, any> = {
   accounts: vAccounts, experts: vExperts, kb: vKb, questions: vQuestions,
   engine: vEngine, gate: vGate, layout: vLayout, api: vApi, portal: vPortal,
 };
+
+// 本视图独占全窗（App.vue 的 .shell.geo-full 收起侧栏），Polaris 的其余功能
+// 靠品牌区这个返回键回去 —— 设计稿没有侧栏，但老视图不能因此够不着。
+const app = useAppStore();
 
 // ── 状态 ──
 const view = ref("dashboard");
@@ -145,6 +151,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     <div class="geo-header">
       <!-- bar1：三板块功能键 -->
       <div class="bar1">
+        <button class="backkey" title="返回 Polaris（对话 / 图谱 / 工坊等）" @click="app.setView('chat')">
+          <span class="ic" v-html="ico('back')"></span>
+        </button>
         <div class="brand"><b>Polaris × GEO</b><small>自媒体运营中心</small></div>
         <div class="zone" v-for="z in ZONES" :key="z.label">
           <span class="zlab">{{ z.label }}</span>

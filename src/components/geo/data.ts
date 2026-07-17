@@ -24,6 +24,7 @@ export const ICONS: Record<string, string> = {
   api: '<path d="M10.6 13.4a3.6 3.6 0 0 0 5.2 0l2.6-2.7a3.6 3.6 0 0 0-5.1-5.1l-1.3 1.3"/><path d="M13.4 10.6a3.6 3.6 0 0 0-5.2 0l-2.6 2.7a3.6 3.6 0 0 0 5.1 5.1l1.3-1.3"/>',
   matrix:
     '<rect x="4" y="4" width="7" height="7" rx="1.6"/><rect x="13" y="4" width="7" height="7" rx="1.6"/><rect x="4" y="13" width="7" height="7" rx="1.6"/><rect x="13" y="13" width="7" height="7" rx="1.6"/>',
+  back: '<path d="M19.5 12h-15"/><path d="M10.5 5.5L4 12l6.5 6.5"/>',
 };
 
 /** 图标 → svg 字符串（aria-hidden，紧邻文字标签）。 */

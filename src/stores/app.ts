@@ -29,7 +29,6 @@ export type ViewKey =
   | "voice_input"
   | "video_course"
   | "media_ops"
-  | "media_dashboard"
   | "deck"
   | "web_studio";
 

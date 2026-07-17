@@ -19,7 +19,6 @@ import {
   Archive,
   Clapperboard,
   Megaphone,
-  Gauge,
   Users,
   Sparkles,
 } from "@lucide/vue";
@@ -53,7 +52,8 @@ const primaryNav: NavItem[] = [
 const moreNav: NavItem[] = [
   { key: "skill_center", label: "技能中心", icon: Puzzle },
   { key: "claude_md", label: "专家团", icon: Users },
-  { key: "media_dashboard", label: "数据看板", icon: Gauge },
+  // 「数据看板」入口已撤：它现在是运营中心内部的第一个子标签（总控 → 数据看板，快捷键 G），
+  // 两个入口两套数据源只会打架。老组件 MediaDashboard.vue 已删。
   { key: "media_ops", label: "运营中心", icon: Megaphone },
   // 「PPT 演示」「网站生成」入口已隐藏：改由对话直接触发（说「做个 PPT / 做个网站」
   // 即自动激活 polaris-deck-studio / polaris-web-studio 技能，见 skills.rs
