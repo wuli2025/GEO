@@ -174,12 +174,19 @@ jobs:
           [ -n "$win_exe" ] && [ -n "$win_sig" ] || { echo "::error::缺 Windows 安装包或其 .sig"; exit 1; }
           [ -n "$mac_tar" ] && [ -n "$mac_sig" ] || { echo "::error::缺 macOS .app.tar.gz 或其 .sig"; exit 1; }
 
-          cp "$win_exe" "$mac_tar" dist/
-          [ -n "$mac_dmg" ] && cp "$mac_dmg" dist/ || true
+          # 文件名先规范化再上传:productName "Polaris GEO" 带空格,而 GitHub 收资产时
+          # 会把空格换成点(Polaris GEO_x64-setup.exe → Polaris.GEO_x64-setup.exe)。
+          # 若照搬本地名拼 URL,latest.json 指向的地址在 Release 上并不存在 → 更新器 404。
+          # (v0.1.0 实测踩过)。自己先 tr ' ' '.',上传名与 URL 名必然一致。
+          win_name=$(basename "$win_exe" | tr ' ' '.')
+          mac_name=$(basename "$mac_tar" | tr ' ' '.')
+          cp "$win_exe" "dist/$win_name"
+          cp "$mac_tar" "dist/$mac_name"
+          if [ -n "$mac_dmg" ]; then cp "$mac_dmg" "dist/$(basename "$mac_dmg" | tr ' ' '.')"; fi
 
           # latest.json:两个平台合进同一份。mac 是 universal 包,两个架构键都指向它。
-          python3 - "$VERSION" "$base" "$(basename "$win_exe")" "$win_sig" \
-                    "$(basename "$mac_tar")" "$mac_sig" <<'PY'
+          python3 - "$VERSION" "$base" "$win_name" "$win_sig" \
+                    "$mac_name" "$mac_sig" <<'PY'
           import json, sys, datetime, pathlib
           version, base, win_name, win_sig, mac_name, mac_sig = sys.argv[1:7]
           win_url = f"{base}/{win_name}"
@@ -215,3 +222,28 @@ jobs:
           # 必须是 latest release,应用端读的是 /releases/latest/download/latest.json
           make_latest: true
           files: dist/*
+
+      # 终验:latest.json 里的每个 url 必须真能下到二进制。
+      # 光看 job 绿没用 —— v0.1.0 就是三个 job 全绿、Release 齐全,但 latest.json 的 url
+      # 因文件名空格被规范化而全部 404,更新器静默失效。这里主动 HEAD 一遍,404 就把发版打红。
+      - name: Verify updater URLs resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 10   # 给 GitHub 一点时间让资产可下载
+          fail=0
+          for url in $(python3 -c "
+          import json
+          d = json.load(open('dist/latest.json'))
+          for p in d['platforms'].values():
+              print(p['url'])
+          " | sort -u); do
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' --max-time 60 "$url" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "OK   $code  $url"
+            else
+              echo "::error::更新器 URL 不可达 ($code): $url"
+              fail=1
+            fi
+          done
+          [ "$fail" = "0" ] || { echo "::error::latest.json 指向的资产下不下来,更新器会失效"; exit 1; }
