@@ -37,7 +37,10 @@ except Exception:  # pragma: no cover
     requests = None
 
 # ───────────────────────── 默认配置（无 ark.json 时用）─────────────────────────
-DEFAULT_API_KEY = "ARK_API_KEY_REMOVED_FROM_HISTORY"  # 粉丝福利默认，用户可改
+# 粉丝福利默认 key 不写进源码(本仓 public,明文 key 会被扫描器抓走)。正常路径是桌面端
+# 用编译期注入的 key 播种 ~/PolarisGEO/data/ark.json,本脚本从那里读;脱离桌面端单跑时
+# 可用环境变量 ARK_API_KEY 兜底。
+DEFAULT_API_KEY = os.environ.get("ARK_API_KEY", "")
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_IMAGE_MODEL = "doubao-seedream-4-5"
 

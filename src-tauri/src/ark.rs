@@ -19,9 +19,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // ───────────────────────── 默认值（粉丝福利种子） ─────────────────────────
 
-/// 粉丝福利默认 key（用户可在设置页改）。仅连通测试可用；生图/聊天需在方舟控制台
-/// 为该账号**开通对应模型**后才能调用（未开通会收到 ModelNotOpen）。
-const DEFAULT_API_KEY: &str = "ARK_API_KEY_REMOVED_FROM_HISTORY";
+/// 默认 key：**发布构建一律为空**，用户在设置页自填。
+///
+/// 原先这里硬编码一把「粉丝福利」共享 key，2026-07-17 移除。理由与 build.rs 里
+/// 停掉 MINIMAX/KIMI 赠送 key 注入的那条政策同源：**客户端二进制保不住共享主密钥**。
+/// 本仓 public，源码里的明文 key 会被扫描器分钟级抓走；退一步在编译期注入也没用 ——
+/// key 明文躺在 exe 的 .rodata 里，而 exe 本身就挂在 public release 上供人下载,
+/// `strings` 一把即得，只是把泄露面从「仓库」挪到「安装包」。
+///
+/// option_env! 仅留给**自用构建**（本机 set 了才有，不进 CI/不进发布包）。若要恢复
+/// 粉丝福利额度，走 build.rs 里写明的正路：服务端代理 + 用户鉴权 + 配额限流，
+/// 客户端只拿短期凭据。
+const DEFAULT_API_KEY: Option<&str> = option_env!("POLARIS_GIFT_ARK_KEY");
 const DEFAULT_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
 /// 生图模型：doubao-seedream 4.5（2026-07 实测该账号区域内存在且在线的最新稳定版本 id）。
 /// 方舟 OpenAI 兼容接口按**完整版本 id** 校验（短别名 `doubao-seedream-4-5` 会 NotFound），故写全。
@@ -30,7 +39,7 @@ const DEFAULT_IMAGE_MODEL: &str = "doubao-seedream-4-5-251128";
 const DEFAULT_CHAT_MODEL: &str = "doubao-seed-2-1-turbo-260628";
 
 fn default_api_key() -> String {
-    DEFAULT_API_KEY.to_string()
+    DEFAULT_API_KEY.unwrap_or_default().to_string()
 }
 fn default_base_url() -> String {
     DEFAULT_BASE_URL.to_string()
