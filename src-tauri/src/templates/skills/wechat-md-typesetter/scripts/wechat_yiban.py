@@ -1451,17 +1451,26 @@ def _upload_cover(page, cover_path):
         # ④ 选中第一张（=最新上传的那张）并**验证真的选中了**。
         #    缩略图是 <i.weui-desktop-img-picker__img-thumb>，不是 <img>——旧版拿 img 找，
         #    永远选不中，于是「下一步」一直禁用、弹窗卡死。
-        rect = page.evaluate(
-            "(s) => { const e = document.querySelector(s); if (!e) return null;"
-            " const r = e.getBoundingClientRect();"
-            " return {x: r.x + r.width/2, y: r.y + r.height/2}; }", ITEM)
-        if not rect:
-            print("[壹伴] 封面：图片库里没有可选项，跳过。", flush=True)
-            return False
-        page.mouse.click(rect["x"], rect["y"])
-        if not _wait_for(lambda: page.evaluate(
-                "(s) => !!document.querySelector(s)", SELECTORS["img_picker_selected"]), timeout=8):
-            print("[壹伴] 封面：缩略图点了但没进选中态，跳过（否则「下一步」是灰的）。", flush=True)
+        #    另一坑（2026-07-18 真机踩到）：上传后网格会重渲染，一次性「取坐标→点→等 8s」
+        #    会撞上重渲染窗口——坐标取到旧节点、点了个寂寞。改成循环重试，每次重新取坐标。
+        picked = False
+        for _try in range(4):
+            rect = page.evaluate(
+                "(s) => { const e = document.querySelector(s); if (!e) return null;"
+                " const r = e.getBoundingClientRect();"
+                " return {x: r.x + r.width/2, y: r.y + r.height/2}; }", ITEM)
+            if not rect:
+                time.sleep(1.5)
+                continue
+            page.mouse.click(rect["x"], rect["y"])
+            if _wait_for(lambda: page.evaluate(
+                    "(s) => !!document.querySelector(s)", SELECTORS["img_picker_selected"]),
+                    timeout=4):
+                picked = True
+                break
+            time.sleep(1.0)
+        if not picked:
+            print("[壹伴] 封面：缩略图重试 4 次仍没进选中态，跳过（否则「下一步」是灰的）。", flush=True)
             page.keyboard.press("Escape")
             return False
 
@@ -1609,6 +1618,52 @@ def run_publish(body_html, theme, title, save_fallback, text_only, timeout, cove
         # 真正保活靠 CDP —— 浏览器是外部独立进程，这里只断开连接。
         try:
             clear_viewport_override(editor_page)   # 别给用户留个被模拟撑变形的窗口
+        except Exception:
+            pass
+        detach_keep_open(ctx)
+
+
+# ───────────────────────── 模式二点五：set-cover（给已存草稿补封面，正文/标题都不动）─────────────────────────
+def run_set_cover(cover_path, timeout):
+    if not cover_path or not os.path.isfile(cover_path):
+        print(json.dumps({"ok": False, "mode": "set-cover",
+                          "reason": "--cover 必填且文件要存在"}, ensure_ascii=False))
+        return
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    ctx = launch_persistent_context(user_data_dir=SESSION_DIR, headless=False, humanize=True)
+    editor_page = None
+    try:
+        page = ctx.new_page() if hasattr(ctx, "new_page") else ctx.pages[0]
+        page.goto(MP_HOME, wait_until="domcontentloaded")
+        print("[壹伴] 补封面模式：若窗口里已开着那篇草稿的编辑器则直接接管；"
+              "否则请打开「草稿箱」→ 点进要设封面的草稿（最多等 %ds）。" % timeout, flush=True)
+        # 与 restyle 同款：绝不能 auto_click_entry——那会新建一篇空文章，而不是改既有草稿
+        pg, frame, body_sel = _wait_editor(
+            ctx, timeout, auto_click_entry=False,
+            hint="请打开草稿箱里要设封面的那篇草稿，脚本会自动接管。")
+        if not frame:
+            print(json.dumps({
+                "ok": False, "mode": "set-cover",
+                "reason": "超时未等到草稿编辑器——请先在窗口里打开要设封面的草稿，再重跑本命令。",
+            }, ensure_ascii=False))
+            return
+        editor_page = pg
+        ensure_window_size(editor_page)   # 封面弹窗底部按钮在低视口下够不着（静默打空）
+        print("[壹伴] 正在设封面……", flush=True)
+        cover_ok = _upload_cover(editor_page, cover_path)
+        saved = confirmed = False
+        if cover_ok:
+            saved, confirmed = _save_draft(editor_page)
+        print(json.dumps({
+            "ok": bool(cover_ok), "mode": "set-cover", "cover": cover_ok,
+            "save_clicked": saved, "save_confirmed": confirmed,
+            "note": ("封面已设好并保存。" if cover_ok
+                     else "封面未能自动设——窗口已留好，可手动设。") +
+                    " 窗口留待核对，绝不自动发布。",
+        }, ensure_ascii=False))
+    finally:
+        try:
+            clear_viewport_override(editor_page)
         except Exception:
             pass
         detach_keep_open(ctx)
@@ -2345,7 +2400,7 @@ def _normalize_theme(name):
 
 def main():
     ap = argparse.ArgumentParser(description="Polaris 壹伴排版引擎 v8（公众号·两段解耦 + 面板 + 长图链路）")
-    ap.add_argument("--mode", choices=["render", "publish", "restyle", "panel",
+    ap.add_argument("--mode", choices=["render", "publish", "restyle", "set-cover", "panel",
                                        "snapshot", "publish-image", "cards"], default="publish")
     ap.add_argument("--body-file", default="", help="干净语义正文 HTML（render/publish/snapshot 必填）")
     ap.add_argument("--theme", default="墨韵", help="风格预设：墨韵/极简/科技蓝/杂志/清新绿/活力橙/米纸/黛青"
@@ -2383,6 +2438,9 @@ def main():
         return
     if args.mode == "restyle":
         run_restyle(args.theme, args.timeout)
+        return
+    if args.mode == "set-cover":
+        run_set_cover(args.cover, args.timeout)
         return
     if args.mode == "publish-image":
         run_publish_image(args.slices_dir, args.title, args.intro, args.timeout)
