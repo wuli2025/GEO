@@ -165,12 +165,22 @@ def _connect_cdp(platform, profile):
 def _launch_local_chrome(user_data_dir, headless):
     """playwright 驱动本地安装的 Google Chrome（channel=chrome）。
     用 no_viewport + --start-maximized 起**真·最大化窗口**：页面视口跟随真实窗口大小，
-    消除「固定 1600x1000 视口 vs 更大窗口」的错位死区（表现为鼠标滚不到底、够不着抖音发布栏）。"""
+    消除「固定 1600x1000 视口 vs 更大窗口」的错位死区（表现为鼠标滚不到底、够不着抖音发布栏）。
+
+    失败时**必须 stop 掉已 start 的 playwright**：泄漏的 asyncio loop 会让下一次
+    sync_playwright().start() 抛「Sync API inside the asyncio loop」，整条回退链形同虚设。"""
     pw = _sync_pw().start()
-    ctx = pw.chromium.launch_persistent_context(
-        user_data_dir, headless=headless, channel="chrome",
-        no_viewport=True,
-        args=["--no-first-run", "--no-default-browser-check", "--start-maximized"])
+    try:
+        ctx = pw.chromium.launch_persistent_context(
+            user_data_dir, headless=headless, channel="chrome",
+            no_viewport=True,
+            args=["--no-first-run", "--no-default-browser-check", "--start-maximized"])
+    except Exception:
+        try:
+            pw.stop()
+        except Exception:
+            pass
+        raise
     ctx._pw = pw
     return ctx
 

@@ -124,7 +124,7 @@ pub(crate) const WEB_TEMPLATE: &str =
 // 的 claude agent 在磁盘上直接 `python …/wechat_yiban.py` 执行。
 pub(crate) const WECHAT_TS_ID: &str = "wechat-md-typesetter";
 // 改动 SKILL.md 或 wechat_yiban.py 后必须 +1，让已安装用户下次启动拿到更新。
-pub(crate) const WECHAT_TS_VERSION: &str = "12";
+pub(crate) const WECHAT_TS_VERSION: &str = "13";
 pub(crate) const WECHAT_TS_SKILL_MD: &str =
     include_str!("../../../../src/templates/skills/wechat-md-typesetter/SKILL.md");
 pub(crate) const WECHAT_TS_YIBAN_PY: &str =
@@ -136,7 +136,7 @@ pub(crate) const WECHAT_TS_YIBAN_PY: &str =
 // 编译期内嵌、启动确保落到 ~/PolarisGEO/skills，spawn 的 claude agent 直接 `python …` 跑脚本。
 pub(crate) const MEDIA_PUB_ID: &str = "media-publisher";
 // 改动 SKILL.md 或任一 py 后必须 +1，让已安装用户下次启动拿到更新。
-pub(crate) const MEDIA_PUB_VERSION: &str = "1";
+pub(crate) const MEDIA_PUB_VERSION: &str = "2";
 pub(crate) const MEDIA_PUB_SKILL_MD: &str =
     include_str!("../../../../src/templates/skills/media-publisher/SKILL.md");
 pub(crate) const MEDIA_PUB_UPLOADER_PY: &str =

@@ -174,8 +174,17 @@ def launch_persistent_context(user_data_dir=".", headless=True, humanize=False, 
                         break
             ver = _cdp_version(CDP_PORT)
             if ver:
+                # 失败必须 stop 掉已 start 的 playwright：泄漏的 asyncio loop 会让下面回退里的
+                # 第二次 start() 抛「Sync API inside the asyncio loop」，回退链形同虚设。
                 pw = _sync_pw().start()
-                browser = pw.chromium.connect_over_cdp("http://127.0.0.1:%d" % CDP_PORT)
+                try:
+                    browser = pw.chromium.connect_over_cdp("http://127.0.0.1:%d" % CDP_PORT)
+                except Exception:
+                    try:
+                        pw.stop()
+                    except Exception:
+                        pass
+                    raise
                 ctx = browser.contexts[0] if browser.contexts else browser.new_context()
                 ctx._pw = pw
                 ctx._cdp = True          # 标记：结束时只断连，别关窗
