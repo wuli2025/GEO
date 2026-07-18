@@ -27,7 +27,7 @@ import vQuestions from "./geo/vQuestions.vue";
 import vEngine from "./geo/vEngine.vue";
 import vGate from "./geo/vGate.vue";
 import vLayout from "./geo/vLayout.vue";
-import vApi from "./geo/vApi.vue";
+import vSettings from "./geo/vSettings.vue";
 import vPortal from "./geo/vPortal.vue";
 
 // KeepAlive include 按组件 name 匹配 → 必须显式命名（切走再回来不丢状态）
@@ -36,7 +36,7 @@ defineOptions({ name: "GeoOpsCenter" });
 const VIEW_COMPONENTS: Record<string, any> = {
   dashboard: vDashboard, approvals: vApprovals, autopilot: vAutopilot, brain: vBrain,
   accounts: vAccounts, experts: vExperts, kb: vKb, questions: vQuestions,
-  engine: vEngine, gate: vGate, layout: vLayout, api: vApi, portal: vPortal,
+  engine: vEngine, gate: vGate, layout: vLayout, settings: vSettings, portal: vPortal,
 };
 
 // ── 状态 ──

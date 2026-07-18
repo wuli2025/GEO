@@ -265,7 +265,7 @@ export const ZONES: Zone[] = [
     ["kb", "kb", "知识库", "K"], ["questions", "ask", "题库", "T"]] },
   { label: "系统", keys: [
     ["engine", "send", "投递引擎", "E"], ["gate", "gate", "质检门禁", "F"],
-    ["layout", "type", "排版中心", "L"], ["api", "api", "API 中心", "I"]] },
+    ["layout", "type", "排版中心", "L"], ["settings", "api", "设置", "I"]] },
 ];
 
 export const SUBTABS: Record<string, [string, string][]> = {
@@ -279,7 +279,7 @@ export const SUBTABS: Record<string, [string, string][]> = {
   engine: [["keep", "CDP 保窗机制"], ["chain", "投递全链路"], ["ledger", "七平台卡点总账"], ["proto", "输出协议"], ["matrix2", "平台×方案选型"]],
   gate: [["scorer", "GEO 九信号评分器"], ["err", "error 11 条"], ["warn", "warning 9 条"], ["anti", "防应付设计"]],
   layout: [["cover", "平台封面规格"], ["theme", "版式与主题参数"], ["how", "人机分工（人调模板参数）"]],
-  api: [["chan", "模型通道"], ["tier", "模型分层"], ["img", "生图通道"]],
+  settings: [["chan", "模型通道"], ["tier", "模型分层"], ["img", "生图通道"], ["update", "我们的更新"], ["env", "环境医生"]],
   portal: [["board", "工作流"], ["qbank", "选题·题库"], ["plan", "规划队列"], ["acct", "账号·发送方式"], ["team", "专家团补丁"], ["blockers", "卡点档案"], ["style", "文风宪法"]],
 };
 

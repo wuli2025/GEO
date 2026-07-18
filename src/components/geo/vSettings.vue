@@ -1,5 +1,10 @@
 <script setup lang="ts">
-/** API 中心：模型通道（chan）与生图通道（img）接真火山方舟 ark 组；模型分层（tier）为静态说明。 */
+/**
+ * 设置中心：原「API 中心」并入此处。
+ * - chan/tier/img：模型通道 / 模型分层 / 生图通道（接真火山方舟 ark 组）；
+ * - update：我们的更新（GitHub Releases 自动更新，转发 useUpdater 状态机）；
+ * - env：环境医生（复用 EnvDoctor 面板模式，随时复检 / 重装）。
+ */
 import { ref, computed, onMounted } from "vue";
 import { ark, type ArkConfig } from "../../tauri";
 import { toast } from "../../composables/useToast";
@@ -8,10 +13,31 @@ import ProviderSwitch from "./ProviderSwitch.vue";
 // 生图模型配置面板(MiniMax / OpenAI / 豆包方舟 / 自定义):原挂在侧栏 ProviderDock,
 // 通用外壳删除后迁到这里 —— 生图通道子页即其唯一入口。
 import ImageProviderPanel from "../ImageProviderPanel.vue";
+// 我们的更新 / 环境医生 —— 从启动流程/横幅迁进设置页
+import EnvDoctor from "../EnvDoctor.vue";
+import {
+  currentVersion, updateVersion, updateNotes, updateError, updating,
+  updateProgress, upToDate, checking, lastCheckedAt, manualCheck, applyUpdate,
+} from "../../composables/useUpdater";
 
 const props = defineProps<{ sub: string; platform: string }>();
 
-const head = title("API 中心", "系统 / M6 模型与 Skill 调用 —— 内置默认通道，用户可换自己的 key");
+// 头部随子页切换（api 三页共用旧文案，其余各自表述）
+const HEADS: Record<string, [string, string]> = {
+  update: ["我们的更新", "设置 / 应用自动更新 —— GitHub Releases 托管，下载安装后自动重启生效"],
+  env: ["环境医生", "设置 / 运行环境监测与一键安装修复（Claude Code / Node / Shell / uv）"],
+};
+const head = computed(() => {
+  const h = HEADS[props.sub];
+  return h ? title(h[0], h[1]) : title("API 中心", "设置 / M6 模型与 Skill 调用 —— 内置默认通道，用户可换自己的 key");
+});
+
+const lastCheckedText = computed(() => {
+  if (!lastCheckedAt.value) return "尚未检查";
+  const d = new Date(lastCheckedAt.value);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `上次检查 ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+});
 const tierHtml = vApiTierHtml();
 
 const cfg = ref<ArkConfig>({ apiKey: "", baseUrl: "", imageModel: "", chatModel: "" });
@@ -201,6 +227,46 @@ const imgCode = computed(
     <!-- 模型分层（静态说明） -->
     <div v-else-if="props.sub === 'tier'" v-html="tierHtml"></div>
 
+    <!-- 我们的更新（GitHub Releases 自动更新，转发后端状态机） -->
+    <template v-else-if="props.sub === 'update'">
+      <section>
+        <div class="card">
+          <h3>我们的更新
+            <span style="font-size: var(--text-xs); color: var(--muted); font-weight: 400">GitHub Releases 托管 · 下载安装后自动重启</span>
+          </h3>
+          <div class="updrow">
+            <div>
+              <div class="updver">当前版本 <code>v{{ currentVersion || "—" }}</code></div>
+              <div class="foot" style="margin: 4px 0 0">{{ lastCheckedText }}</div>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap">
+              <button class="btn ghost" :disabled="checking || updating" @click="manualCheck">
+                <span v-if="checking" class="spin" style="margin-right: 6px">◔</span>检查更新
+              </button>
+              <button v-if="updateVersion" class="btn" :disabled="updating" @click="applyUpdate">
+                <span v-if="updating" class="spin" style="margin-right: 6px">◔</span>{{ updating ? `更新中 ${updateProgress}%` : `立即更新到 v${updateVersion}` }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="updating" class="updbar"><div class="updbar-fill" :style="{ width: updateProgress + '%' }"></div></div>
+
+          <div v-if="updateVersion" class="callout g" style="margin-top: 12px; font-size: var(--text-xs)">发现新版本 <b>v{{ updateVersion }}</b>，点「立即更新」即可后台下载安装并自动重启。</div>
+          <div v-else-if="upToDate" class="callout g" style="margin-top: 12px; font-size: var(--text-xs)">已是最新版本 ✓</div>
+          <div v-if="updateError" class="callout r" style="margin-top: 12px; font-size: var(--text-xs)">{{ updateError }}</div>
+
+          <div v-if="updateNotes" class="updnotes">{{ updateNotes }}</div>
+
+          <p class="foot">更新经后端唯一状态机（updater.rs）单飞执行，多次点击不重入；无网络 / 未发布 release / 非桌面运行时会被静默忽略。</p>
+        </div>
+      </section>
+    </template>
+
+    <!-- 环境医生（复用 EnvDoctor 面板模式，随时复检 / 重装） -->
+    <template v-else-if="props.sub === 'env'">
+      <section><EnvDoctor /></section>
+    </template>
+
     <!-- 生图通道（接真 ark 生图） -->
     <template v-else>
       <section>
@@ -255,4 +321,11 @@ const imgCode = computed(
 .imgstat { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 5px; flex-shrink: 0; }
 .imgstat.live { color: #16a34a; background: #16a34a14; border: 1px solid #16a34a55; }
 .imgstat.placeholder { color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
+
+/* 我们的更新 */
+.updrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.updver { font-size: 13px; font-weight: 600; color: var(--text); }
+.updbar { height: 6px; border-radius: 4px; background: var(--bg-soft); overflow: hidden; margin-top: 12px; }
+.updbar-fill { height: 100%; background: var(--primary); transition: width 0.25s ease; }
+.updnotes { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--bg-soft); font-size: 12px; color: var(--muted); white-space: pre-wrap; }
 </style>
