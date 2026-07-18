@@ -2354,6 +2354,8 @@ def main():
     ap.add_argument("--body-only", action="store_true",
                     help="render 模式输出纯 body 片段（无 doctype/meta，可直接注入编辑器）")
     ap.add_argument("--title", default="", help="文章标题（publish/publish-image 填进后台；snapshot 用作切片文件名）")
+    ap.add_argument("--title-file", default="",
+                    help="从 UTF-8 文件读标题，给了就覆盖 --title（Windows 控制台常把中文参数传花，中文标题优先走这里）")
     ap.add_argument("--out", default="", help="render 模式输出文件路径 / publish 成品落盘路径")
     ap.add_argument("--out-dir", default="", help="snapshot 切片输出目录（缺省=正文旁的 长图切片-主题/）")
     ap.add_argument("--slices-dir", default="", help="publish-image 的切片目录（即 snapshot 的 out-dir）")
@@ -2372,6 +2374,9 @@ def main():
     ap.add_argument("--cover", default="", help="封面图路径（publish 模式：正文就位后自动设封面）")
     args = ap.parse_args()
     args.theme = _normalize_theme(args.theme)
+    if args.title_file:
+        with open(args.title_file, "r", encoding="utf-8") as f:
+            args.title = f.read().strip()
 
     if args.mode == "panel":
         run_panel(args.timeout)
