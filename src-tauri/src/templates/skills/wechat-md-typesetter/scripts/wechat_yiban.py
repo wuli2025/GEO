@@ -57,6 +57,13 @@ import sys
 import time
 import urllib.request
 
+# Windows 控制台默认 GBK，中文输出会变乱码；统一按 UTF-8 输出。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ───────────────────────── CloakBrowser（默认浏览器，drop-in 替换 Playwright）─────────────────────────
 # ── 本地真实 Chrome 优先（channel=chrome），CloakBrowser 仅作回退 ──
 # 用户要求优先本地浏览器：本地 Chrome 渲染正常（CloakBrowser 模拟浏览器会把公众号等编辑器
@@ -1307,15 +1314,18 @@ def _wait_editor(ctx, timeout, auto_click_entry, hint):
 
 
 # ───────────────────────── 模式一：render（预览 / 兜底，确定性）─────────────────────────
-def run_render(body_html, theme, out_path):
+def run_render(body_html, theme, out_path, body_only=False):
     browser = launch(headless=True, humanize=False)
     try:
         page = browser.new_page()
         full = _styled_html(page, body_html, theme)
+        if body_only:
+            # 注入编辑器用的纯 body 片段：剥掉 doctype+meta，保留行内样式容器 div。
+            full = full.replace("<!doctype html><meta charset='utf-8'>", "", 1)
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(full)
         print(json.dumps({"ok": True, "mode": "render", "out": os.path.abspath(out_path),
-                          "theme": theme}, ensure_ascii=False))
+                          "theme": theme, "body_only": body_only}, ensure_ascii=False))
     finally:
         try:
             browser.close()
@@ -2303,12 +2313,46 @@ def _publish_failed(ctx, body_html, theme, save_fallback, reason):
     }, ensure_ascii=False))
 
 
+THEME_PRESETS = ("墨韵", "极简", "科技蓝", "杂志", "清新绿", "活力橙", "米纸", "黛青")
+# 英文别名：Windows 控制台（GBK）把中文命令行参数传花时的保命通道。
+THEME_ALIASES = {
+    "moyun": "墨韵", "ink": "墨韵",
+    "jijian": "极简", "minimal": "极简",
+    "kejilan": "科技蓝", "tech": "科技蓝", "techblue": "科技蓝",
+    "zazhi": "杂志", "magazine": "杂志",
+    "qingxinlv": "清新绿", "green": "清新绿",
+    "huolicheng": "活力橙", "orange": "活力橙",
+    "mizhi": "米纸", "paper": "米纸",
+    "daiqing": "黛青", "indigo": "黛青",
+}
+
+
+def _normalize_theme(name):
+    """预设名/英文别名 → 规范中文名；都不认识就显式警告再回退墨韵（不再无声回退）。"""
+    name = (name or "").strip()
+    if not name or name in THEME_PRESETS:
+        return name or "墨韵"
+    ali = THEME_ALIASES.get(name.lower())
+    if ali:
+        return ali
+    if name.startswith("{"):
+        return name  # AI 生成的主题对象 JSON，交给 JS 端处理
+    print("[壹伴] WARN 主题「%s」不在预设里（常见原因：Windows 控制台编码把中文参数弄花），"
+          "回退默认「墨韵」。中文传参不稳时请用英文别名：moyun/minimal/tech/magazine/"
+          "green/orange/paper/indigo" % name, flush=True)
+    return "墨韵"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Polaris 壹伴排版引擎 v8（公众号·两段解耦 + 面板 + 长图链路）")
     ap.add_argument("--mode", choices=["render", "publish", "restyle", "panel",
                                        "snapshot", "publish-image", "cards"], default="publish")
     ap.add_argument("--body-file", default="", help="干净语义正文 HTML（render/publish/snapshot 必填）")
-    ap.add_argument("--theme", default="墨韵", help="风格预设：墨韵/极简/科技蓝/杂志/清新绿/活力橙/米纸/黛青")
+    ap.add_argument("--theme", default="墨韵", help="风格预设：墨韵/极简/科技蓝/杂志/清新绿/活力橙/米纸/黛青"
+                    "（也认英文别名 moyun/minimal/tech/magazine/green/orange/paper/indigo，"
+                    "防 Windows 控制台把中文参数传花）")
+    ap.add_argument("--body-only", action="store_true",
+                    help="render 模式输出纯 body 片段（无 doctype/meta，可直接注入编辑器）")
     ap.add_argument("--title", default="", help="文章标题（publish/publish-image 填进后台；snapshot 用作切片文件名）")
     ap.add_argument("--out", default="", help="render 模式输出文件路径 / publish 成品落盘路径")
     ap.add_argument("--out-dir", default="", help="snapshot 切片输出目录（缺省=正文旁的 长图切片-主题/）")
@@ -2327,6 +2371,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=300, help="等登录+编辑器的秒数（默认 300）")
     ap.add_argument("--cover", default="", help="封面图路径（publish 模式：正文就位后自动设封面）")
     args = ap.parse_args()
+    args.theme = _normalize_theme(args.theme)
 
     if args.mode == "panel":
         run_panel(args.timeout)
@@ -2357,7 +2402,7 @@ def main():
     if args.mode == "render":
         out = args.out or os.path.join(os.path.dirname(os.path.abspath(args.body_file)),
                                        "公众号排版-预览.html")
-        run_render(body, args.theme, out)
+        run_render(body, args.theme, out, body_only=args.body_only)
     elif args.mode == "snapshot":
         out_dir = args.out_dir or os.path.join(
             os.path.dirname(os.path.abspath(args.body_file)),

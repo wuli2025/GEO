@@ -12,7 +12,7 @@ created_at: 0
 > 输入需求/文案 → 选风格与站点类型 → 输出一个**自包含、响应式**的网站 `.html`（双击即开、可直接部署/分享）。
 > 设计语言借鉴 open-design：玻璃态吸顶导航、渐变大标题、bento 卡片网格、数据条、价格卡、CTA 横幅、多列页脚、滚动揭示动效。
 
-技能资源目录（已随 App 落盘）：`~/Polaris/skills/polaris-web-studio/`
+技能资源目录（已随 App 落盘）：`~/PolarisGEO/skills/polaris-web-studio/`
 ```
 assets/site.css     网站组件库（nav/hero/bento/stats/pricing/cta/footer/btn，响应式）
 assets/themes.css   17 套主题（[data-theme] 属性选择器，与 PPT 演示同源）
@@ -64,11 +64,11 @@ templates/site.html 起始模板（完整一页站点骨架）
    - **降级已内置**：`prefers-reduced-motion` 时自动停 Canvas、动画直接落终值；粒子数按屏宽分档（≤80/120/180）。**别给学术/公文/暖色品牌站开**（粒子干扰阅读）。
 3. **★ 做成自包含单文件**：把 `assets/site.css` + `assets/themes.css` 内联进 `<style>`、`assets/runtime.js` 内联进 `<script>`，删掉对 `../assets/*` 的外链。**启用了高级动效就再内联 `assets/motion.css`（进 `<style>`）+ `assets/motion.js`（进 `<script>`）**。读取：
    ```bash
-   cat ~/Polaris/skills/polaris-web-studio/assets/site.css
-   cat ~/Polaris/skills/polaris-web-studio/assets/themes.css
-   cat ~/Polaris/skills/polaris-web-studio/assets/runtime.js
-   cat ~/Polaris/skills/polaris-web-studio/assets/motion.css   # 仅启用动效时
-   cat ~/Polaris/skills/polaris-web-studio/assets/motion.js    # 仅启用动效时
+   cat ~/PolarisGEO/skills/polaris-web-studio/assets/site.css
+   cat ~/PolarisGEO/skills/polaris-web-studio/assets/themes.css
+   cat ~/PolarisGEO/skills/polaris-web-studio/assets/runtime.js
+   cat ~/PolarisGEO/skills/polaris-web-studio/assets/motion.css   # 仅启用动效时
+   cat ~/PolarisGEO/skills/polaris-web-studio/assets/motion.js    # 仅启用动效时
    ```
    存到产物目录（文件名如 `网站-<主题>.html`）。
 4. 回答末尾给出 `.html` 绝对路径，说明：双击用浏览器打开；响应式；按 `T` 可预览换主题。

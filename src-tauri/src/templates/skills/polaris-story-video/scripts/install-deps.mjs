@@ -23,7 +23,8 @@ function has(bin, arg = "-version") {
 
 function hasMiniMaxKey() {
   if (process.env.MINIMAX_API_KEY) return true;
-  const pj = path.join(os.homedir(), "Polaris", "data", "providers.json");
+  const pjGeo = path.join(os.homedir(), "PolarisGEO", "data", "providers.json");
+  const pj = fs.existsSync(pjGeo) ? pjGeo : path.join(os.homedir(), "Polaris", "data", "providers.json");
   try {
     const store = JSON.parse(fs.readFileSync(pj, "utf8"));
     const mm = (store.items || []).find((p) => p.id === "minimax" || /minimax/i.test(p.name || ""));

@@ -103,7 +103,7 @@ pub(crate) fn write_designers(dest: &Path) -> Result<(), String> {
 // 支撑「网站生成」UI 入口。复用 deck-studio 的 17 套主题（DECK_THEMES_CSS，不重复源文件），
 // 配一套网站组件 site.css + 滚动揭示 runtime.js + 站点模板 + SKILL.md。
 pub(crate) const WEB_ID: &str = "polaris-web-studio";
-pub(crate) const WEB_VERSION: &str = "6";
+pub(crate) const WEB_VERSION: &str = "7";
 pub(crate) const WEB_SKILL_MD: &str =
     include_str!("../../../../src/templates/skills/polaris-web-studio/SKILL.md");
 pub(crate) const WEB_LICENSE: &str = include_str!("../../../../src/templates/skills/polaris-web-studio/LICENSE");
@@ -124,7 +124,7 @@ pub(crate) const WEB_TEMPLATE: &str =
 // 的 claude agent 在磁盘上直接 `python …/wechat_yiban.py` 执行。
 pub(crate) const WECHAT_TS_ID: &str = "wechat-md-typesetter";
 // 改动 SKILL.md 或 wechat_yiban.py 后必须 +1，让已安装用户下次启动拿到更新。
-pub(crate) const WECHAT_TS_VERSION: &str = "11";
+pub(crate) const WECHAT_TS_VERSION: &str = "12";
 pub(crate) const WECHAT_TS_SKILL_MD: &str =
     include_str!("../../../../src/templates/skills/wechat-md-typesetter/SKILL.md");
 pub(crate) const WECHAT_TS_YIBAN_PY: &str =

@@ -25,7 +25,7 @@ created_at: 0
 | MiniMax key | 生图 image-01 + 配音 T2A | Polaris 供应商坞自动提供（同一个 key） |
 
 ```bash
-node ~/Polaris/skills/polaris-story-video/scripts/install-deps.mjs
+node ~/PolarisGEO/skills/polaris-story-video/scripts/install-deps.mjs
 ```
 
 ---
@@ -88,7 +88,7 @@ node ~/Polaris/skills/polaris-story-video/scripts/install-deps.mjs
 ### 第二步 · 出片（脚本自动）
 
 ```bash
-node ~/Polaris/skills/polaris-story-video/scripts/run.mjs \
+node ~/PolarisGEO/skills/polaris-story-video/scripts/run.mjs \
   --storyboard=<storyboard.json 绝对路径> \
   --output=<成片 mp4 绝对路径>
 ```
