@@ -339,6 +339,20 @@ PLATFORMS = {
         "save_selectors": [],
         "auto_save": True,
         "save_ok_selectors": ["*:has-text('已自动保存')", "*:has-text('草稿已保存')"],
+        # 题图（封面）：编辑器右上「添加封面」= 隐藏 input.UploadPicture-input（accept 只收 jpg/png），
+        # 无弹窗、无 hover——直接 set_input_files 喂真实文件即走知乎原生上传接口。合成 dataURL 粘贴对
+        # 知乎 Draft.js 无效，必须走这条原生 file 通道。上传成功后 wrapper 里会出现预览 <img> → 回读确认。
+        "cover": {
+            # 机制（2026-07-20 真机）：必须先点「添加封面」label 激活封面组件，React 才认后续 set_input_files；
+            # 直接喂 input.UploadPicture-input（display:none 旧节点）而不点 label 时事件被吞、无预览。
+            "reveal_click": ["label:has-text('添加封面')", "label.css-1yj4uzm"],
+            "direct_input": ["input.UploadPicture-input",
+                             "label:has-text('添加封面') input[type=file]",
+                             "input[accept='.jpeg, .jpg, .png']"],
+            # 上传成功后封面区出现 <img alt="封面图">（src=pic-private.zhihu.com…article_draft_web）
+            "verify": ["img[alt='封面图']", "img[src*='pic-private.zhihu']"],
+            "upload_wait": 15,
+        },
     },
     "toutiao": {
         "name": "今日头条",
@@ -1108,6 +1122,37 @@ def set_cover(page, cfg, cover_path):
         return False, "本平台未配置封面流程"
     if not cover_path or not os.path.isfile(cover_path):
         return False, "封面图不存在: %s" % cover_path
+
+    # 直喂通道（知乎题图等）：封面区就是个隐藏 input[type=file]，无弹窗/无 hover——
+    # 直接 set_input_files 喂真实文件走平台原生上传，再回读预览 <img> 确认落地。
+    if cc.get("direct_input"):
+        try:
+            # 先把「添加封面」入口滚进视口并点一下——激活封面组件，React 才会认后续 set_input_files。
+            for rsel in cc.get("reveal_click", []):
+                try:
+                    loc = page.locator(rsel).first
+                    loc.scroll_into_view_if_needed(timeout=3000)
+                    time.sleep(0.3)
+                    loc.click(timeout=2500)
+                    time.sleep(0.5)
+                    break
+                except Exception:
+                    pass
+            ifr, iel, isel = _find_in_frames(page, cc["direct_input"])
+            if not iel:
+                return False, "没找到题图上传 input（结构可能变了）"
+            iel.set_input_files(cover_path)
+            _log("cover_input_fed", selector=isel, path=cover_path)
+            deadline = time.time() + cc.get("upload_wait", 12)
+            while time.time() < deadline:
+                vfr, vel, _ = _find_in_frames(page, cc.get("verify", []))
+                if vel:
+                    return True, "题图已上传并回读到预览缩略图（落地确认）"
+                time.sleep(0.5)
+            return False, "题图已喂入但 %ss 内未回读到预览，请在窗口目检" % cc.get("upload_wait", 12)
+        except Exception as e:
+            return False, "题图直喂异常: %s" % str(e)[:80]
+
     try:
         # 封面区常在正文下方——先把「设置封面」滚进视口，否则 open/更换 都点不到（元素在 DOM 但离屏）
         for sel in cc.get("scroll_into", []):

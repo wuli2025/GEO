@@ -464,6 +464,18 @@ export interface MediaKpi {
   runs: number; drafts: number; published: number; failed: number;
   successRate: number; tokens: number; cost: number;
 }
+/** 发文排期：每平台一条，到期自动往规划队列塞「例行发文」任务（只入队，绝不自动发布）。 */
+export interface MediaSchedule {
+  platform: MediaPlatform; enabled: boolean;
+  /** 发文周期（天/篇），默认 3 */
+  intervalDays: number;
+  /** 上次触发（unix 秒）；null = 从未 */
+  lastFiredAt: number | null;
+  /** 最近调参来源："seed" | "human" | "brain" */
+  source: string; note: string;
+  /** 派发上下文：到期入队时附在任务 note 上，主 agent 领任务时以此为工作指令 */
+  context: string; updatedAt: number;
+}
 export const mediaOps = {
   state: () => invoke<{
     topics: MediaTopic[]; queue: MediaQueueItem[];
@@ -481,6 +493,10 @@ export const mediaOps = {
   queueDelete: (id: string) => invoke<void>("mediaops_queue_delete", { id }),
   settingsSet: (platform: MediaPlatform, patch: Partial<MediaPlatformSettings>) =>
     invoke<MediaPlatformSettings>("mediaops_settings_set", { platform, patch }),
+  scheduleList: () => invoke<MediaSchedule[]>("mediaops_schedule_list"),
+  scheduleSet: (platform: MediaPlatform, patch: { intervalDays?: number; enabled?: boolean; note?: string; context?: string; source?: string }) =>
+    invoke<MediaSchedule>("mediaops_schedule_set", { platform, ...patch }),
+  scheduleTick: () => invoke<MediaQueueItem[]>("mediaops_schedule_tick"),
   metricAdd: (platform: MediaPlatform, kind: "run" | "draft" | "publish" | "fail", tokens?: number, cost?: number, detail?: string) =>
     invoke<void>("mediaops_metric_add", { platform, kind, tokens, cost, detail }),
   metricsSummary: () =>
@@ -534,7 +550,7 @@ export interface PromptVersion {
   content: string; status: "active" | "superseded" | "rolled_back"; perfNote: string; createdAt: number;
 }
 export interface FlywheelSummary {
-  health: number; monthInsights: number; solidified: number; rolledBack: number; observing: number;
+  health: number; monthInsights: number; solidified: number; rolledBack: number; observing: number; overdue: number;
 }
 export const evolutionApi = {
   state: () => invoke<{ insights: InsightCard[]; timeline: EvolutionEntry[]; promptVersions: PromptVersion[] }>("evolution_state"),
@@ -578,20 +594,103 @@ export interface MediaJobStep {
 }
 export interface MediaJob {
   id: string; queueId?: string; platform: string; title: string; topic: string;
-  stages: string[]; status: "pending" | "running" | "done" | "failed" | "canceled";
+  stages: string[]; skipStages?: string[]; status: "pending" | "running" | "done" | "failed" | "canceled";
   stage: string; steps: MediaJobStep[]; articlePath?: string; logPath: string; error?: string;
   createdAt: number; updatedAt: number;
 }
 export const mediaJob = {
-  start: (a: { queueId?: string; platform?: string; title?: string; topic?: string; stages?: string[]; articlePath?: string }) =>
+  start: (a: { queueId?: string; platform?: string; title?: string; topic?: string; stages?: string[]; articlePath?: string; model?: string }) =>
     invoke<MediaJob>("media_job_start", a),
   status: (jobId: string) => invoke<MediaJob>("media_job_status", { jobId }),
   list: () => invoke<MediaJob[]>("media_job_list"),
   cancel: (jobId: string) => invoke<void>("media_job_cancel", { jobId }),
+  /** 续跑失败/取消的 job：已完成且产物尚在的阶段自动跳过 */
+  resume: (jobId: string) => invoke<MediaJob>("media_job_resume", { jobId }),
   /** job 日志尾部（详情视图实时回放生成流程） */
   log: (jobId: string, tailLines?: number) => invoke<string>("media_job_log", { jobId, tailLines }),
   /** 正文产物内容（.md / 公众号语义 .html） */
   article: (jobId: string) => invoke<string>("media_job_article", { jobId }),
+};
+
+// ── 推广植入（GEO 品牌织入）module —— brand.json 档案 + 分平台强度 + 硬广守卫 ──
+export interface BrandProfile {
+  /** 总开关：关掉则 generate 不织入契约（硬广守卫仍守底线） */
+  enabled: boolean;
+  name: string;
+  domain: string;
+  /** 一句话定位 */
+  tagline: string;
+  /** 事实库：可引用的数据/案例（引用式植入的弹药） */
+  facts: string[];
+  /** 权威背书 */
+  endorsements: string[];
+  /** GEO 锚词：希望被 AI 检索到的问题/词，契约要求正文自然覆盖并与品牌同段共现 */
+  keywords: string[];
+  /** 植入手法 id 多选（case/experience/data/toollist/pain/compare），空=模型按语境自选 */
+  tactics: string[];
+  // ── 品牌内涵「切入点库」：填得越细，模型能挑到的自然落点越多 ──
+  /** 行业 / 赛道 */
+  industry: string;
+  /** 品牌理念 / 价值主张 */
+  philosophy: string;
+  /** 品牌故事 / 起源 */
+  story: string;
+  /** 创始人 / 团队背景（E-E-A-T） */
+  founder: string;
+  /** 提及品牌时的口吻 */
+  tone: string;
+  /** 核心业务 / 产品线 */
+  business: string[];
+  /** 目标人群画像 */
+  audience: string[];
+  /** 解决的痛点（最好用的切入口） */
+  painPoints: string[];
+  /** 典型使用场景 */
+  scenarios: string[];
+  /** 差异化优势 */
+  differentiators: string[];
+  /** 已知短板 / 不适用场景（敢写短板才可信） */
+  weaknesses: string[];
+  /** 同类 / 竞品对照对象 */
+  competitors: string[];
+  /** 品牌专有名词（要求原词照抄） */
+  terms: string[];
+  /** 常见问题，每行 `问||答` */
+  faq: string[];
+  /** 表述红线（广告法风险词等） */
+  bannedWords: string[];
+  /** 已启用随契约喂给模型的品牌资料文件名（本体在 brand-docs/ 目录） */
+  docs: string[];
+  /** 平台 id → "strong" | "weak" | "zero"（缺省走后端默认矩阵） */
+  strength: Record<string, string>;
+}
+/** 植入手法选单项：[id, 人话名, 做法说明] */
+export type BrandTactic = [string, string, string];
+/** 一份上传的品牌资料（原件存在 ~/PolarisGEO/data/brand-docs/） */
+export interface BrandDoc {
+  name: string;
+  chars: number;
+  enabled: boolean;
+  excerpt: string;
+  /** 超过单文件预算 → 写作时只喂前 4000 字 */
+  truncated: boolean;
+}
+export const brand = {
+  get: () => invoke<BrandProfile>("brand_profile_get"),
+  set: (profile: BrandProfile) => invoke<void>("brand_profile_set", { profile }),
+  /** 硬广守卫试打：返回违规清单（空=通过） */
+  guardTest: (platform: string, text: string) => invoke<string[]>("brand_guard_test", { platform, text }),
+  /** 预览某平台将织入的契约块：[强度人话, 契约文本]；null=档案未启用 */
+  contractPreview: (platform: string) => invoke<[string, string] | null>("brand_contract_preview", { platform }),
+  /** 植入手法选单（后端唯一真源，前端不硬编） */
+  tactics: () => invoke<BrandTactic[]>("brand_tactics"),
+  /** 品牌资料：列表 / 上传（同名覆盖）/ 删除 / 读全文 */
+  docList: () => invoke<BrandDoc[]>("brand_doc_list"),
+  docSave: (name: string, content: string) => invoke<void>("brand_doc_save", { name, content }),
+  docDelete: (name: string) => invoke<void>("brand_doc_delete", { name }),
+  docRead: (name: string) => invoke<string>("brand_doc_read", { name }),
+  /** [brand.json 路径, brand-docs 目录路径] */
+  paths: () => invoke<[string, string]>("brand_paths"),
 };
 
 // ──────────────────────────────────────────────────────────────

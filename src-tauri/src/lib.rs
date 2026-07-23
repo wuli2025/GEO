@@ -1,5 +1,6 @@
 // ── 引擎模块（桌面 + Docker 两种外壳共用同一份源码）──
 pub mod accounts;
+pub mod brand;
 pub mod evolution;
 pub mod media_engine;
 pub mod mediaops;
@@ -157,6 +158,8 @@ pub fn run() {
             // 语音输入「极速说」:配置 + 个人词表(首启种子)就位,供防污染秒达档使用。
             voice::init();
             echo::start_scheduler(h.clone());
+            // 自媒体发文排期巡检：启动即补跑一轮（应用关着期间错过的排期），此后每 30 分钟一轮。
+            mediaops::start_schedule_ticker();
             // 寓言计划:检索枢纽(fable.db 表结构就位;盘点/索引由用户在设置页触发)。
             fable::init();
             // 协作主机自启:上次点过「设为主机」就静默续上(不阻塞启动)。
@@ -233,11 +236,26 @@ pub fn run() {
             mediaops::mediaops_queue_update,
             mediaops::mediaops_queue_delete,
             mediaops::mediaops_settings_set,
+            mediaops::mediaops_schedule_list,
+            mediaops::mediaops_schedule_set,
+            mediaops::mediaops_schedule_tick,
             mediaops::mediaops_metric_add,
             mediaops::mediaops_metrics_summary,
+            // 推广植入（GEO 品牌织入）：brand.json 档案 + 分平台强度 + 硬广守卫
+            brand::brand_profile_get,
+            brand::brand_profile_set,
+            brand::brand_guard_test,
+            brand::brand_contract_preview,
+            brand::brand_tactics,
+            brand::brand_doc_list,
+            brand::brand_doc_save,
+            brand::brand_doc_delete,
+            brand::brand_doc_read,
+            brand::brand_paths,
             // 自媒体投递引擎（板块B）：生成→排版→上传草稿全链路 job
             media_engine::media_job_start,
             media_engine::media_job_status,
+            media_engine::media_job_resume,
             media_engine::media_job_list,
             media_engine::media_job_cancel,
             media_engine::media_job_log,

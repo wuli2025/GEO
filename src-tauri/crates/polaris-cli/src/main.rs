@@ -60,6 +60,12 @@ const HELP: &str = r#"polaris-forge — Polaris Forge 渲染引擎 CLI
   polaris-forge fable eval [--set=<考卷.json>] [--top=12] [--mode=hybrid] [--init]
       跑评测集(考卷)→ recall@k + MRR,把「准不准」变成数字;--init 先写一份样例。
 
+  polaris-forge media-run --platform=<id> --title=<标题> [--topic=<方向>]
+                          [--stages=generate,image,typeset,upload] [--model=<claude模型>]
+      无头跑一条投递流水线 job(生成→配图→排版→存草稿),与桌面端同一引擎。
+      同步阻塞至 done/failed,阶段进展打 stderr,最终 job 快照 JSON 打 stdout。
+      --model 下发给 claude CLI(如 claude-opus-4-8);省略用 CLI 默认模型。
+
 约定:成功 → JSON 到 stdout,退出码 0;失败 → {"ok":false,"error":…} 到 stderr,退出码 1。
 "#;
 
@@ -243,6 +249,53 @@ fn run(cmd: &str, args: &[String]) -> Result<Value, String> {
                         .map_err(|e| e.to_string())
                 }
                 other => Err(format!("未知 fable 子命令 {other}(--help 看用法)")),
+            }
+        }
+        // 自媒体投递流水线:无头驱动与桌面端字节级一致的 media_engine
+        "media-run" => {
+            let platform = req(args, "platform")?;
+            let title = req(args, "title")?;
+            let stages = flag(args, "stages").map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect::<Vec<_>>()
+            });
+            let job = app::media_engine::media_job_start(
+                None,
+                Some(platform),
+                Some(title),
+                flag(args, "topic"),
+                stages,
+                flag(args, "article"),
+                flag(args, "model"),
+            )?;
+            eprintln!("[media-run] job {} 已启动(阶段:{})", job.id, job.stages.join("→"));
+            // 同步等待:轮询 job 状态,阶段/步骤变化打 stderr,方便脚本与人同时盯。
+            let mut last_step = String::new();
+            let fin = loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let j = app::media_engine::media_job_status(job.id.clone())?;
+                if let Some(s) = j.steps.last() {
+                    let sig = format!("{}:{}", s.key, s.status);
+                    if sig != last_step {
+                        eprintln!("[media-run] {} — {} {}", s.label, s.status, s.detail);
+                        last_step = sig;
+                    }
+                }
+                if matches!(j.status.as_str(), "done" | "failed" | "canceled") {
+                    break j;
+                }
+            };
+            eprintln!("[media-run] job {} 终态:{}", fin.id, fin.status);
+            let v = serde_json::to_value(&fin).map_err(|e| e.to_string())?;
+            if fin.status == "done" {
+                Ok(v)
+            } else {
+                Err(fin
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| format!("job 终态 {}", fin.status)))
             }
         }
         other => Err(format!("未知子命令 {other}(--help 看用法)")),

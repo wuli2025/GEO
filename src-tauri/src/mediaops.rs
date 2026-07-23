@@ -28,6 +28,22 @@ const PLATFORMS: &[&str] = &[
     "wechat", "xhs", "zhihu", "toutiao", "baijia", "bilibili", "douyin", "csdn", "juejin",
 ];
 
+/// 平台中文名（例行任务标题 / 进化卡标题用）。
+fn platform_name(p: &str) -> &str {
+    match p {
+        "wechat" => "公众号",
+        "xhs" => "小红书",
+        "zhihu" => "知乎",
+        "toutiao" => "头条",
+        "baijia" => "百家号",
+        "bilibili" => "B站",
+        "douyin" => "抖音",
+        "csdn" => "CSDN",
+        "juejin" => "掘金",
+        other => other,
+    }
+}
+
 // ───────────────────────── 数据类型 ─────────────────────────
 
 /// 题库条目：一个选题从进池到发布/否决的全生命周期。
@@ -48,6 +64,8 @@ pub struct Topic {
     pub source: String,
     #[serde(default)]
     pub note: String,
+    /// alias 容错：外部 agent 曾直接以蛇形键写过此文件，一个键名不认导致整库被判损坏太脆。
+    #[serde(alias = "created_at")]
     pub created_at: i64,
 }
 
@@ -95,6 +113,46 @@ pub struct PlatformSettings {
     pub workflow: Vec<WorkflowStep>,
 }
 
+/// 发文排期：每平台一条，每 `interval_days` 天自动往规划队列塞一条「例行发文」任务。
+/// 只入队、不发布——后续仍走正常 pipeline + 人工审批（红线：绝不自动发布）。
+/// 人与大脑（autopilot）共用 `mediaops_schedule_set` 调参，实际变更自动在进化时间线留卡。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishSchedule {
+    pub platform: String,
+    pub enabled: bool,
+    /// 发文周期（天/篇），默认 3
+    #[serde(default = "default_interval_days")]
+    pub interval_days: u32,
+    /// 上次触发时刻（unix 秒）；种子时锚定为创建时刻，首次触发在一个周期之后
+    #[serde(default)]
+    pub last_fired_at: Option<i64>,
+    /// 最近一次调参来源："seed" | "human" | "brain"
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub note: String,
+    /// 派发上下文：到期入队时附在任务上，主 agent 领任务时以此为工作指令。
+    /// 人在 UI 改、大脑经 apihub 改都走 mediaops_schedule_set；空串则触发时回退默认指令。
+    #[serde(default)]
+    pub context: String,
+    pub updated_at: i64,
+}
+
+fn default_interval_days() -> u32 {
+    3
+}
+
+/// 平台默认派发上下文（种子值 & 空上下文的触发回退）。
+fn default_schedule_context(platform: &str) -> String {
+    format!(
+        "从题库为{name}选一条 pool 状态选题（题库无货则先按缺口清单补 2 个候选再选其一），\
+按{name}的平台工作流跑完整流水线：调研→写作→质检→去AI味→配图→排版，产出到待审批为止。\
+标题与首段须与其他平台差异化；遵守全局日配额、错峰窗口与红线——绝不自动发布，发布由人审批。",
+        name = platform_name(platform)
+    )
+}
+
 /// 度量事件：一次运营动作的原子记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,6 +180,8 @@ pub struct MediaOpsState {
     pub queue: Vec<QueueItem>,
     #[serde(default)]
     pub settings: Vec<PlatformSettings>,
+    #[serde(default)]
+    pub schedules: Vec<PublishSchedule>,
     #[serde(default)]
     pub metrics: Vec<MetricEvent>,
 }
@@ -281,6 +341,38 @@ fn seed_missing_settings(store: &mut MediaStore) -> bool {
     changed
 }
 
+fn default_schedule(platform: &str) -> PublishSchedule {
+    PublishSchedule {
+        platform: platform.to_string(),
+        enabled: true,
+        interval_days: default_interval_days(),
+        // 锚定为创建时刻：首次触发在一个周期之后，而不是首启就 9 条任务糊脸。
+        last_fired_at: Some(now_secs()),
+        source: "seed".to_string(),
+        note: String::new(),
+        context: default_schedule_context(platform),
+        updated_at: now_secs(),
+    }
+}
+
+/// 给缺失的平台补上默认排期（幂等，默认 3 天/篇）；给老记录回填空的派发上下文。返回是否有变更。
+fn seed_missing_schedules(store: &mut MediaStore) -> bool {
+    let mut changed = false;
+    for &p in PLATFORMS {
+        if !store.schedules.iter().any(|s| s.platform == p) {
+            store.schedules.push(default_schedule(p));
+            changed = true;
+        }
+    }
+    for s in store.schedules.iter_mut() {
+        if s.context.trim().is_empty() {
+            s.context = default_schedule_context(&s.platform);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// 从磁盘加载 store；不存在/损坏则空 store。随后 seed 缺失的平台设置，若有变更即落盘。
 fn load_or_seed() -> MediaStore {
     let path = data_path();
@@ -304,7 +396,7 @@ fn load_or_seed() -> MediaStore {
         MediaStore::default()
     };
 
-    let seeded = seed_missing_settings(&mut store);
+    let seeded = seed_missing_settings(&mut store) | seed_missing_schedules(&mut store);
     if seeded {
         // 首启/升级补种后立即落盘，之后重启不再重复种。
         write_store(&path, &store);
@@ -519,6 +611,172 @@ pub fn mediaops_settings_set(
     };
     persist();
     Ok(result)
+}
+
+// ───────────────────────── Commands: 发文排期 ─────────────────────────
+
+/// 列出各平台发文排期。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn mediaops_schedule_list() -> Vec<PublishSchedule> {
+    STORE.read().schedules.clone()
+}
+
+/// 调整某平台排期（周期/启停/备注，传什么改什么）。
+/// `source`：谁在调——"human"（默认，UI 手调）| "brain"（大脑·autopilot 经 apihub 调）。
+/// 不变式⑥：周期或启停的实际变更自动在进化时间线留一张 schedule 卡（best-effort，不阻断调参）。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn mediaops_schedule_set(
+    platform: String,
+    interval_days: Option<u32>,
+    enabled: Option<bool>,
+    note: Option<String>,
+    context: Option<String>,
+    source: Option<String>,
+) -> Result<PublishSchedule, String> {
+    if !PLATFORMS.contains(&platform.as_str()) {
+        return Err(format!("未知平台：{platform}"));
+    }
+    if let Some(d) = interval_days {
+        if !(1..=60).contains(&d) {
+            return Err("发文周期须在 1–60 天之间".to_string());
+        }
+    }
+    let src = source.unwrap_or_else(|| "human".to_string());
+    let (result, change_desc) = {
+        let mut store = STORE.write();
+        if !store.schedules.iter().any(|s| s.platform == platform) {
+            store.schedules.push(default_schedule(&platform));
+        }
+        let s = store
+            .schedules
+            .iter_mut()
+            .find(|s| s.platform == platform)
+            .expect("just ensured present");
+        let mut changes: Vec<String> = Vec::new();
+        if let Some(v) = interval_days {
+            if v != s.interval_days {
+                changes.push(format!("周期 {} → {} 天/篇", s.interval_days, v));
+                s.interval_days = v;
+            }
+        }
+        if let Some(v) = enabled {
+            if v != s.enabled {
+                changes.push(if v { "启用排期" } else { "停用排期" }.to_string());
+                s.enabled = v;
+            }
+        }
+        if let Some(v) = note {
+            s.note = v;
+        }
+        if let Some(v) = context {
+            if v.trim() != s.context.trim() {
+                changes.push("更新派发上下文".to_string());
+                s.context = v.trim().to_string();
+            }
+        }
+        if !changes.is_empty() {
+            s.source = src.clone();
+        }
+        s.updated_at = now_secs();
+        (s.clone(), changes.join("；"))
+    };
+    persist();
+    if !change_desc.is_empty() {
+        let _ = crate::evolution::evolution_add(
+            "schedule".to_string(),
+            format!("调度：{} {}", platform_name(&result.platform), change_desc),
+            Some(result.note.clone()),
+            // 上下文变更把全文放进 diff，时间线上可追溯大脑/人到底改成了什么
+            change_desc
+                .contains("派发上下文")
+                .then(|| result.context.clone()),
+            Some(src),
+            None,
+            None,
+            None,
+        );
+    }
+    Ok(result)
+}
+
+/// 排期巡检：到期的平台自动往规划队列塞一条「例行发文」任务，返回本轮新入队的任务。
+/// - 只入队、不发布——任务照常走 pipeline + 人工审批（红线：绝不自动发布）。
+/// - 该平台还有未完成任务（queued/running）或在平台设置里被停用时跳过，防堆积；
+///   跳过也推进 last_fired_at——积压消化后从下一个周期重新起算，不连环补发。
+pub fn schedule_tick_internal() -> Vec<QueueItem> {
+    let now = now_secs();
+    let mut fired: Vec<QueueItem> = Vec::new();
+    let mut advanced = false;
+    {
+        let mut store = STORE.write();
+        let due: Vec<(String, u32, String)> = store
+            .schedules
+            .iter()
+            .filter(|s| s.enabled)
+            .filter(|s| {
+                s.last_fired_at
+                    .map_or(true, |t| now - t >= s.interval_days as i64 * 86_400)
+            })
+            .map(|s| (s.platform.clone(), s.interval_days, s.context.clone()))
+            .collect();
+        for (p, days, ctx) in due {
+            let platform_off = store
+                .settings
+                .iter()
+                .any(|s| s.platform == p && !s.enabled);
+            let busy = store
+                .queue
+                .iter()
+                .any(|q| q.platform == p && matches!(q.status.as_str(), "queued" | "running"));
+            if let Some(s) = store.schedules.iter_mut().find(|s| s.platform == p) {
+                s.last_fired_at = Some(now);
+                advanced = true;
+            }
+            if platform_off || busy {
+                continue;
+            }
+            // 派发上下文附在 note 里：主 agent 领任务时以此为工作指令（空则用平台默认）
+            let ctx = if ctx.trim().is_empty() {
+                default_schedule_context(&p)
+            } else {
+                ctx
+            };
+            let item = QueueItem {
+                id: gen_id(),
+                platform: p.clone(),
+                topic_id: None,
+                title: format!("【例行】{}：选题待定（每 {} 天一篇）", platform_name(&p), days),
+                scheduled_at: None,
+                status: "queued".to_string(),
+                article_path: None,
+                note: format!("schedule:auto\n派发上下文：{ctx}"),
+                updated_at: now,
+            };
+            store.queue.push(item.clone());
+            fired.push(item);
+        }
+    }
+    if advanced {
+        persist();
+    }
+    fired
+}
+
+/// 手动触发一轮排期巡检（UI「立即巡检」按钮 / apihub）。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn mediaops_schedule_tick() -> Vec<QueueItem> {
+    schedule_tick_internal()
+}
+
+/// 后台定时器：启动即巡检一次（补上应用关着期间错过的排期），此后每 30 分钟一轮。
+pub fn start_schedule_ticker() {
+    std::thread::spawn(|| loop {
+        let fired = schedule_tick_internal();
+        if !fired.is_empty() {
+            eprintln!("[schedule] 例行发文入队 {} 条", fired.len());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(30 * 60));
+    });
 }
 
 // ───────────────────────── Commands: 度量 ─────────────────────────

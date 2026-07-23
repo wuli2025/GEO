@@ -121,8 +121,17 @@ pub struct MediaJob {
     pub title: String,
     #[serde(default)]
     pub topic: String,
+    /// 生成阶段下发给 claude CLI 的 `--model`（空=CLI 默认模型）。跑高档模型
+    /// （如 claude-opus-4-8）出正式稿时由启动方显式指定，随 job 持久化、续跑不变。
+    #[serde(default)]
+    pub model: String,
     /// 本 job 要跑的阶段（generate/typeset/upload 的子集，按此顺序执行）。
+    /// ★ 这是**原始**阶段列表，续跑不会改写它——详情时间线与二次续跑都依赖它保持完整。
     pub stages: Vec<String>,
+    /// 续跑时判定为「已完成、本轮跳过」的阶段。run_job 遍历 stages 时据此 continue。
+    /// 每次 start/resume 都会重算，非续跑场景恒为空。
+    #[serde(default)]
+    pub skip_stages: Vec<String>,
     /// "pending" | "running" | "done" | "failed" | "canceled"
     pub status: String,
     /// 当前/最后所处阶段（空=未开跑）。
@@ -168,12 +177,11 @@ fn load_jobs() -> HashMap<String, MediaJob> {
     for mut j in list {
         if j.status == "running" || j.status == "pending" {
             j.status = "failed".to_string();
-            j.error = Some("应用重启中断（历史快照）".to_string());
+            j.error = Some("应用重启中断：进程死掉时此 job 正在跑——点「继续」可从断点重跑".to_string());
             for s in j.steps.iter_mut().filter(|s| s.status == "run") {
                 s.status = "fail".to_string();
-                if s.detail.is_empty() {
-                    s.detail = "应用重启中断".to_string();
-                }
+                // 无条件覆盖：残留的「正在写作…」之类进行时文案配上 fail 状态极具误导性。
+                s.detail = "应用重启中断，此步没有跑完——点「继续」从断点重跑".to_string();
             }
         }
         map.insert(j.id.clone(), j);
@@ -638,7 +646,12 @@ fn replace_pair(s: &str, delim: &str, open: &str, close: &str) -> String {
 
 /// 起一个只读 headless claude（allowedTools 仅 Read/Glob/Grep，物理上无法写文件），把 prompt
 /// 经 stdin 喂进去，收集全部 assistant 文本返回。child 登记进 CHILDREN(key) 供 cancel 杀树。
-fn run_claude_collect(job_id: &str, prompt: &str, log_path: &Path) -> Result<String, String> {
+fn run_claude_collect(
+    job_id: &str,
+    prompt: &str,
+    log_path: &Path,
+    model: &str,
+) -> Result<String, String> {
     let claude_bin: std::ffi::OsString = polaris_kernel::doctor::resolve_claude_exe()
         .map(|p| p.into_os_string())
         .ok_or_else(|| {
@@ -655,7 +668,11 @@ fn run_claude_collect(job_id: &str, prompt: &str, log_path: &Path) -> Result<Str
         "--permission-mode=bypassPermissions",
         "--allowedTools",
         "Read,Glob,Grep", // 只读：正文由 Rust 落盘，claude 只出文本
-    ])
+    ]);
+    if !model.trim().is_empty() {
+        cmd.args(["--model", model.trim()]);
+    }
+    cmd
     .current_dir(&cwd)
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
@@ -846,14 +863,22 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     )
     .map(|v| v.id)
     .unwrap_or_default();
+    // 循环工程闭环：insight 卡按范围/功劳分选出，注入系统设定——卡库改变行为，而非死账本。
+    let insights = crate::evolution::insights_for_prompt(&attr.expert_id, &job.platform);
+    if !insights.is_empty() {
+        log_line(
+            log_path,
+            &format!("generate：注入 insight 卡 {} 张", insights.matches("\n- ").count()),
+        );
+    }
     let cn = platform_cn(&job.platform);
     let topic = if job.topic.trim().is_empty() {
         "（未提供额外方向，按标题自行立意）".to_string()
     } else {
         job.topic.trim().to_string()
     };
-    let prompt = format!(
-        "{system}\n\n---\n\n# 写作任务\n\n\
+    let mut prompt = format!(
+        "{system}{insights}\n\n---\n\n# 写作任务\n\n\
 你现在为「{cn}」平台撰写一篇成品正文。\n\n\
 选题标题：{title}\n\
 选题方向 / 要点：{topic}\n\n\
@@ -868,6 +893,14 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
         title = job.title,
         topic = topic,
     );
+    // ── 推广植入（方案 A：提示词层注入）：读 brand.json，把「品牌植入契约」织进
+    // 写作提示词——在写作时织入而不是写完后再贴，正文与品牌同源才自然、才不触发
+    // 平台硬广风控。档案未启用则一字不加，老行为零变化。
+    if let Some((strength, block)) = crate::brand::contract_for(&job.platform) {
+        log_line(log_path, &format!("generate：织入品牌植入契约（{strength}）"));
+        prompt.push_str("\n");
+        prompt.push_str(&block);
+    }
 
     log_line(
         log_path,
@@ -892,7 +925,7 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
         &format!("{} 正在为「{cn}」写作…", attr.expert_name),
         StepAttr { prompt: prompt.clone(), ..attr.clone() },
     );
-    let raw = run_claude_collect(&job.id, &prompt, log_path)?;
+    let raw = run_claude_collect(&job.id, &prompt, log_path, &job.model)?;
     let body = strip_code_fence(&raw);
     let words = body.chars().count();
     log_line(log_path, &format!("generate：产出正文 {words} 字符"));
@@ -933,6 +966,19 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     }
 
     push_step(&job.id, "generate:guard", "内容守卫（CLI 错误话术 + 最小字数）", "ok", &format!("{words} 字符，通过"));
+
+    // ── 硬广守卫（推广植入方案四件套之③）：Rust 确定性正则拦截，不靠模型自觉。
+    // 弱/零植入平台正文命中裸链/域名/微信号/手机号/二维码话术即判失败——防封的
+    // backstop，宁可 fail 也绝不污染草稿箱。
+    push_step(&job.id, "generate:brandguard", "硬广守卫（分平台植入强度）", "run", "按平台强度扫描引流特征");
+    let violations = crate::brand::hard_ad_guard(&job.platform, &body);
+    if !violations.is_empty() {
+        let msg = format!("命中 {} 项：{}", violations.len(), violations.join("；"));
+        log_line(log_path, &format!("generate：硬广守卫拦截——{msg}"));
+        push_step(&job.id, "generate:brandguard", "硬广守卫（分平台植入强度）", "fail", &msg);
+        return Err(format!("generate 硬广守卫拦截：{msg}"));
+    }
+    push_step(&job.id, "generate:brandguard", "硬广守卫（分平台植入强度）", "ok", "未命中引流特征，通过");
 
     let path = article_path_for(&job.platform, &job.title);
     if let Some(parent) = path.parent() {
@@ -987,7 +1033,7 @@ fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageA
     // 1) 文本模型出画面描述（解析失败降级：用标题兜一个封面描述，不断流）
     let mut cover_prompt = String::new();
     let mut inline_plans: Vec<(String, String)> = Vec::new();
-    match run_claude_collect(&job.id, &prompt, log_path) {
+    match run_claude_collect(&job.id, &prompt, log_path, &job.model) {
         Ok(raw) => {
             let cleaned = strip_code_fence(&raw);
             let json_str = cleaned
@@ -1362,6 +1408,11 @@ fn run_job(job_id: String) {
     };
 
     for stage in &job0.stages {
+        // 续跑：上一轮已完成且产物尚在的阶段本轮跳过。时间线里它那一格保持原来的 ok 不动。
+        if job0.skip_stages.contains(stage) {
+            log_line(&log_path, &format!("阶段 {stage} 上轮已完成，续跑跳过"));
+            continue;
+        }
         if job_is_canceled(&job_id) {
             log_line(&log_path, "检测到取消，停止后续阶段");
             return;
@@ -1522,6 +1573,7 @@ pub fn media_job_start(
     topic: Option<String>,
     stages: Option<Vec<String>>,
     article_path: Option<String>,
+    model: Option<String>,
 ) -> Result<MediaJob, String> {
     // 解析平台 / 标题 / 已存产物：优先 queue_id，回落显式入参。
     let (platform, title, queue_article) = if let Some(qid) = &queue_id {
@@ -1572,7 +1624,9 @@ pub fn media_job_start(
         platform,
         title,
         topic: topic.unwrap_or_default(),
+        model: model.map(|m| m.trim().to_string()).unwrap_or_default(),
         stages: stages_norm,
+        skip_stages: Vec::new(),
         status: "pending".to_string(),
         stage: String::new(),
         steps: Vec::new(),
@@ -1594,6 +1648,86 @@ pub fn media_job_start(
 #[cfg_attr(feature = "desktop", tauri::command)]
 pub fn media_job_status(job_id: String) -> Result<MediaJob, String> {
     get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))
+}
+
+/// 续跑一条失败/被取消的 job：从断点重跑，已完成且产物还在的阶段直接跳过。
+/// - generate 已成且 .md 还在 → 跳过（产物路径原样复用）；
+/// - image 已成 → 跳过（封面/插图按约定位置从盘上捡，见 run_job）；
+/// - typeset / upload 幂等且便宜，一律重跑。
+/// 队列项随 run_job 重新置 running；步骤时间线原位翻转 fail→run→ok，历史不清空。
+/// 算出续跑计划：`(本轮要跑的阶段, 本轮跳过的阶段)`。
+/// 从 `media_job_resume` 里抽出来的纯函数——不碰全局 JOBS、不 spawn 线程，可直接单测。
+/// `article_alive` 由调用方探盘后传入，测试里可直接给定。
+fn resume_plan(job: &MediaJob, article_alive: bool) -> Result<(Vec<String>, Vec<String>), String> {
+    // 判定某阶段是否已完成：时间线里该 key 的最后一格是 ok/skip。
+    let stage_ok = |key: &str| {
+        job.steps
+            .iter()
+            .rev()
+            .find(|s| s.key == key)
+            .map(|s| s.status == "ok" || s.status == "skip")
+            .unwrap_or(false)
+    };
+
+    let remaining: Vec<String> = job
+        .stages
+        .iter()
+        .filter(|s| match s.as_str() {
+            STAGE_GENERATE => !(stage_ok(STAGE_GENERATE) && article_alive),
+            STAGE_IMAGE => !stage_ok(STAGE_IMAGE),
+            _ => true, // typeset / upload 幂等，重跑
+        })
+        .cloned()
+        .collect();
+
+    // 要跑 typeset/upload 就必须有正文；而本轮又不打算跑 generate 补它 → 无从下手。
+    let needs_article = remaining
+        .iter()
+        .any(|s| s.as_str() != STAGE_GENERATE && s.as_str() != STAGE_IMAGE);
+    let will_generate = remaining.iter().any(|s| s == STAGE_GENERATE);
+    if needs_article && !will_generate && !article_alive {
+        return Err("正文产物已不在磁盘上，无法跳过 generate——请整条重跑".to_string());
+    }
+
+    let skipped: Vec<String> = job
+        .stages
+        .iter()
+        .filter(|s| !remaining.contains(s))
+        .cloned()
+        .collect();
+    Ok((remaining, skipped))
+}
+
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn media_job_resume(job_id: String) -> Result<MediaJob, String> {
+    let job = get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))?;
+    match job.status.as_str() {
+        "failed" | "canceled" => {}
+        "done" => return Err("该 job 已完成，无需续跑".to_string()),
+        other => return Err(format!("该 job 仍在 {other}，不能续跑")),
+    }
+
+    let article_alive = job
+        .article_path
+        .as_ref()
+        .map(|p| Path::new(p).is_file())
+        .unwrap_or(false);
+    let (remaining, skipped) = resume_plan(&job, article_alive)?;
+
+    log_line(
+        &log_path_for(&job_id),
+        &format!("job 续跑：重跑 {remaining:?}，跳过已完成 {skipped:?}"),
+    );
+    // ★ 只记「本轮跳过谁」，绝不改写 stages——否则原始阶段列表就此丢失，
+    //   同一 job 二次续跑与详情页阶段展示都会基于被截短的列表。
+    update_job(&job_id, |j| {
+        j.status = "pending".to_string();
+        j.error = None;
+        j.stage = String::new();
+        j.skip_stages = skipped;
+    });
+    std::thread::spawn(move || run_job(job_id.clone()));
+    get_job(&job.id).ok_or_else(|| "job 状态异常".to_string())
 }
 
 /// 列出全部 job（新→旧）。
@@ -1713,7 +1847,9 @@ mod tests {
                 platform: "wechat".into(),
                 title: "t".into(),
                 topic: String::new(),
+                model: String::new(),
                 stages: vec![STAGE_GENERATE.into()],
+                skip_stages: Vec::new(),
                 status: "running".into(),
                 stage: String::new(),
                 steps: vec![],
@@ -1751,6 +1887,87 @@ mod tests {
         assert!(s.started_at > 0, "首次记步应落起点，否则算不出耗时");
 
         JOBS.lock().remove(job_id);
+    }
+
+    /// 造一条只有阶段和时间线的 job，供 resume_plan 用。
+    fn job_for_resume(stages: &[&str], done: &[&str]) -> MediaJob {
+        MediaJob {
+            id: "t".into(),
+            queue_id: None,
+            platform: "wechat".into(),
+            title: "t".into(),
+            topic: String::new(),
+            model: String::new(),
+            stages: stages.iter().map(|s| s.to_string()).collect(),
+            skip_stages: Vec::new(),
+            status: "failed".into(),
+            stage: String::new(),
+            steps: done
+                .iter()
+                .map(|k| JobStep {
+                    key: k.to_string(),
+                    status: "ok".into(),
+                    ..Default::default()
+                })
+                .collect(),
+            article_path: None,
+            log_path: String::new(),
+            error: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        }
+    }
+
+    /// 续跑只跳过「已完成且产物还在」的阶段，typeset/upload 幂等一律重跑。
+    #[test]
+    fn resume_plan_skips_only_finished_stages() {
+        let job = job_for_resume(
+            &[STAGE_GENERATE, STAGE_IMAGE, STAGE_TYPESET],
+            &[STAGE_GENERATE],
+        );
+        let (remaining, skipped) = resume_plan(&job, true).expect("正文还在，应能续跑");
+        assert_eq!(skipped, vec![STAGE_GENERATE.to_string()], "generate 已成且产物在盘，应跳过");
+        assert_eq!(
+            remaining,
+            vec![STAGE_IMAGE.to_string(), STAGE_TYPESET.to_string()],
+            "image 未成 + typeset 幂等，都要跑"
+        );
+    }
+
+    /// ★ 回归锁：续跑**不得**改写 job.stages。否则同一 job 二次续跑会基于被截短的
+    ///   列表，已跳过的阶段永久消失，详情页阶段时间线也跟着残缺。
+    #[test]
+    fn resume_plan_never_shrinks_original_stages() {
+        let all = [STAGE_GENERATE, STAGE_IMAGE, STAGE_TYPESET];
+        let mut job = job_for_resume(&all, &[STAGE_GENERATE]);
+
+        // 第一次续跑：跳过 generate，只记进 skip_stages。
+        let (_, skipped1) = resume_plan(&job, true).expect("第一次续跑");
+        job.skip_stages = skipped1;
+        assert_eq!(job.stages.len(), 3, "stages 必须保持原始三段");
+
+        // 第二次续跑（比如 image 又挂了）：仍然从完整的三段里重算。
+        job.steps.push(JobStep {
+            key: STAGE_IMAGE.into(),
+            status: "ok".into(),
+            ..Default::default()
+        });
+        let (remaining2, skipped2) = resume_plan(&job, true).expect("第二次续跑");
+        assert_eq!(job.stages.len(), 3, "二次续跑后 stages 依然完整");
+        assert_eq!(
+            skipped2,
+            vec![STAGE_GENERATE.to_string(), STAGE_IMAGE.to_string()],
+            "两段都已完成，二次续跑应一并跳过"
+        );
+        assert_eq!(remaining2, vec![STAGE_TYPESET.to_string()], "只剩排版要跑");
+    }
+
+    /// 正文产物已不在磁盘上、本轮又不跑 generate → 明确报错，不要闷头跑排版。
+    #[test]
+    fn resume_plan_rejects_typeset_without_article() {
+        let job = job_for_resume(&[STAGE_TYPESET], &[]);
+        let err = resume_plan(&job, false).expect_err("没正文不该放行");
+        assert!(err.contains("正文产物"), "错误应说清是正文缺失：{err}");
     }
 
     #[test]

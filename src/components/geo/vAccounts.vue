@@ -1,9 +1,9 @@
 <script setup lang="ts">
-/** 账号矩阵：账号总表接真登录态（media_accounts_status / media_account_open）；分发与风控红线为设计稿静态。 */
-import { ref, computed, onMounted } from "vue";
+/** 账号矩阵：账号总表全接真登录态（media_accounts_status / media_account_open / media_account_forget）；分发与风控红线为设计稿静态。 */
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { title } from "./render";
-import { MOCK, P } from "./data";
-import { mediaAccounts, type MediaAccountStatus, type MediaPlatform } from "../../tauri";
+import { MOCK } from "./data";
+import { mediaAccounts, MEDIA_PLATFORMS, type MediaAccountStatus, type MediaPlatform } from "../../tauri";
 import { toast } from "../../composables/useToast";
 
 const props = defineProps<{ sub: string; platform: string }>();
@@ -13,58 +13,102 @@ const head = computed(() =>
 );
 
 const statuses = ref<MediaAccountStatus[]>([]);
+const loadFailed = ref(false);
 const busy = ref<string | null>(null);
 const addingAccount = ref(false);
-const addPlatform = ref("wechat");
+const addPlatform = ref<MediaPlatform>("wechat");
 
 async function loadStatus() {
   try {
     statuses.value = await mediaAccounts.status();
+    loadFailed.value = false;
   } catch {
-    statuses.value = [];
+    // 保留上一次的数据，别把表清空
+    loadFailed.value = statuses.value.length === 0;
   }
 }
 onMounted(loadStatus);
 
-const boundMap = computed(() => {
-  const m = new Map<string, boolean>();
-  for (const s of statuses.value) m.set(s.platform, s.bound);
-  return m;
-});
-
-interface Row {
-  pid: string; pname: string; name: string; role: string;
-  cls: string; txt: string; profile: string; port: string; quota: number; recent7: number; real: boolean;
+// ── 登录后轮询：扫码是分钟级动作，开完窗口只刷一次必然看不到结果 ──
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let pollLeft = 0;
+function stopPoll() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
-const rows = computed<Row[]>(() =>
-  MOCK.accounts.map((a) => {
-    const pid = a[0];
-    let login = a[3];
-    const rb = boundMap.value.get(pid);
-    // 主号登录态用后端真值覆盖（后端按平台探测，对应主号 profile）
-    const real = a[2] === "主号" && rb !== undefined;
-    if (real) login = rb ? "ok" : "none";
-    const lv = login === "ok" ? { cls: "ok", txt: "正常" } : login === "warn" ? { cls: "warn", txt: "待处理" } : { cls: "idle", txt: "未登录" };
-    return { pid, pname: P(pid)?.name ?? pid, name: a[1], role: a[2], cls: lv.cls, txt: lv.txt, profile: a[4], port: String(a[5]), quota: a[6], recent7: a[7], real };
-  })
-);
-const platformCount = computed(() => new Set(MOCK.accounts.map((a) => a[0])).size);
+function pollUntilBound(pid: string) {
+  stopPoll();
+  pollLeft = 40; // 40 × 3s = 2 分钟窗口
+  pollTimer = setInterval(async () => {
+    await loadStatus();
+    const s = statuses.value.find((x) => x.platform === pid);
+    if (s?.bound) {
+      toast.info(`${s.label} 登录态已保存到 profile，之后投递草稿不再重复扫码`);
+      stopPoll();
+    } else if (--pollLeft <= 0) {
+      stopPoll();
+    }
+  }, 3000);
+}
+onUnmounted(stopPoll);
 
-async function openLogin(pid: string) {
-  busy.value = pid;
+const boundCount = computed(() => statuses.value.filter((s) => s.bound).length);
+
+function fmtActive(ts: number | null): string {
+  if (!ts) return "—";
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return `${Math.floor(diff / 86400)} 天前`;
+}
+
+async function openWindow(pid: string, target: "login" | "draft") {
+  const key = `${pid}:${target}`;
+  busy.value = key;
+  const wasBound = statuses.value.find((x) => x.platform === pid)?.bound ?? false;
   try {
-    const r = await mediaAccounts.open(pid as MediaPlatform, "login");
-    toast.info(r?.message ?? "已打开登录窗口，扫码后关闭即可，登录态永久保留");
-    setTimeout(loadStatus, 800);
+    const r = await mediaAccounts.open(pid as MediaPlatform, target);
+    toast.info(r?.message ?? "已打开窗口，扫码登录后关闭即可，登录态永久保留");
+    if (!wasBound) pollUntilBound(pid);
+    else setTimeout(loadStatus, 2000);
   } catch (e: any) {
     toast.error(e?.message ?? String(e));
   } finally {
     busy.value = null;
   }
 }
+
+async function forget(s: MediaAccountStatus) {
+  if (!confirm(`解绑「${s.label}」？将删除其登录态 profile，下次发文需重新扫码。`)) return;
+  busy.value = `${s.platform}:forget`;
+  try {
+    const msg = await mediaAccounts.forget(s.platform);
+    toast.info(msg);
+    await loadStatus();
+  } catch (e: any) {
+    toast.error(e?.message ?? String(e));
+  } finally {
+    busy.value = null;
+  }
+}
+
+function startAdd() {
+  addingAccount.value = !addingAccount.value;
+  if (addingAccount.value) {
+    // 默认选中第一个还没绑定的平台
+    const first = statuses.value.find((s) => !s.bound) ?? statuses.value[0];
+    if (first) addPlatform.value = first.platform;
+  }
+}
+const addOptions = computed(() =>
+  (statuses.value.length
+    ? statuses.value.map((s) => ({ id: s.platform, name: s.label, bound: s.bound }))
+    : MEDIA_PLATFORMS.map((p) => ({ id: p.id, name: p.name, bound: false })))
+);
+
 function checkAll() {
   loadStatus();
-  toast.info("已按平台重新探测登录态（account-keeper 逐账号体检需 --account 支持，工程中）");
+  toast.info("已重新探测 9 平台登录态（account-keeper 逐账号体检需 --account 支持，工程中）");
 }
 
 const dispatchHtml = computed(() => {
@@ -98,48 +142,54 @@ const risk2Html = `<section><div class="card"><h3>多账号风控红线（写进
 
     <template v-if="props.sub === 'roster'">
       <div class="callout y">
-        <b>引擎现状（诚实声明）</b>：draft_uploader 目前按<b>平台</b>取 profile（每平台一个）。多账号需给它加
-        <code>--account</code> 参数——profile 目录与 CDP 端口按账号分配，其余逻辑复用。改动很小，但<b>尚未实现</b>；
-        本页登录态已接真（主号取后端探测值）。
+        <b>引擎现状（诚实声明）</b>：每平台一个<b>主号</b> profile，登录态、最近活动、绑定状态均为后端实时探测的真值。
+        矩阵多账号需给 draft_uploader 加 <code>--account</code> 参数（profile 目录与 CDP 端口按账号分配），改动很小但<b>尚未实现</b>。
       </div>
       <section>
         <div class="card">
-          <h3>账号总表（{{ MOCK.accounts.length }} 个账号 / {{ platformCount }} 个平台）</h3>
+          <h3>账号总表（{{ statuses.length || MEDIA_PLATFORMS.length }} 个平台 / {{ boundCount }} 个已绑定）</h3>
           <div class="tbl-wrap">
             <table>
               <tr>
-                <th>平台</th><th>账号</th><th>角色</th><th>登录态</th><th>profile（每账号独立）</th>
-                <th>CDP 端口</th><th class="num-cell">日配额</th><th class="num-cell">近7天</th><th>操作</th>
+                <th>平台</th><th>角色</th><th>登录态</th><th>最近活动</th>
+                <th>profile（登录态目录）</th><th>操作</th>
               </tr>
-              <tr v-for="(r, i) in rows" :key="i">
-                <td>{{ r.pname }}</td>
-                <td><b>{{ r.name }}</b></td>
-                <td><span class="badge" :class="r.role === '主号' ? 'b-full' : 'b-ghost'">{{ r.role }}</span></td>
-                <td><span class="sline"><span class="sdot" :class="r.cls"></span>{{ r.txt }}<span v-if="r.real" style="color: var(--muted); margin-left: 4px">· 实</span></span></td>
-                <td><code>{{ r.profile }}</code></td>
-                <td class="num-cell">{{ r.port }}</td>
-                <td class="num-cell">{{ r.quota }}</td>
-                <td class="num-cell">{{ r.recent7 }}</td>
+              <tr v-if="!statuses.length">
+                <td colspan="6" style="color: var(--muted)">
+                  {{ loadFailed ? "登录态探测失败——后端命令不可用，点「全矩阵体检」重试" : "探测登录态中…" }}
+                </td>
+              </tr>
+              <tr v-for="s in statuses" :key="s.platform">
+                <td><b>{{ s.label }}</b></td>
+                <td><span class="badge b-full">主号</span></td>
+                <td>
+                  <span class="sline" :title="s.detail">
+                    <span class="sdot" :class="s.bound ? 'ok' : 'idle'"></span>{{ s.bound ? "已绑定" : "未登录" }}
+                  </span>
+                </td>
+                <td>{{ fmtActive(s.lastActive) }}</td>
+                <td><code :title="s.profileDir">{{ s.profileDir }}</code></td>
                 <td style="white-space: nowrap">
-                  <button v-if="r.role === '主号'" class="btn sm" :disabled="busy === r.pid" @click="openLogin(r.pid)">
-                    <span v-if="busy === r.pid" class="spin" style="margin-right: 4px">◔</span>打开登录
+                  <button class="btn sm" :disabled="busy === `${s.platform}:login`" @click="openWindow(s.platform, 'login')">
+                    <span v-if="busy === `${s.platform}:login`" class="spin" style="margin-right: 4px">◔</span>打开登录
                   </button>
-                  <span v-else style="color: var(--muted); font-size: var(--text-2xs)">矩阵（待 --account）</span>
+                  <button v-if="s.bound" class="btn sm ghost" style="margin-left: 6px" :disabled="busy === `${s.platform}:draft`" @click="openWindow(s.platform, 'draft')">发文窗口</button>
+                  <button v-if="s.bound" class="btn sm ghost" style="margin-left: 6px" :disabled="busy === `${s.platform}:forget`" @click="forget(s)">解绑</button>
                 </td>
               </tr>
             </table>
           </div>
-          <div style="margin-top: var(--space-xs); display: flex; gap: 8px; flex-wrap: wrap">
-            <button class="btn sm" title="选平台后开登录窗扫码即挂号（每平台一个主号；矩阵号待 --account 支持）" @click="addingAccount = !addingAccount">＋ 添加账号</button>
+          <div style="margin-top: var(--space-xs); display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+            <button class="btn sm" title="选平台后开登录窗扫码即挂号（每平台一个主号；矩阵号待 --account 支持）" @click="startAdd">＋ 添加账号</button>
             <template v-if="addingAccount">
-              <select v-model="addPlatform" class="inp" style="width:auto;padding:4px 8px">
-                <option v-for="r in rows" :key="r.pid" :value="r.pid">{{ r.pname }}</option>
+              <select v-model="addPlatform" class="inp" style="width: auto; padding: 4px 8px">
+                <option v-for="o in addOptions" :key="o.id" :value="o.id">{{ o.name }}{{ o.bound ? "（已绑定）" : "" }}</option>
               </select>
-              <button class="btn sm" :disabled="!!busy" @click="openLogin(addPlatform); addingAccount = false">开登录窗扫码</button>
+              <button class="btn sm" :disabled="!!busy" @click="openWindow(addPlatform, 'login'); addingAccount = false">开登录窗扫码</button>
             </template>
             <button class="btn sm ghost" @click="checkAll">全矩阵体检</button>
           </div>
-          <p class="foot">主号养权重、发主稿；矩阵号发差异化变体。待接入平台（CSDN/掘金/视频号）接入后在此挂账号。</p>
+          <p class="foot">主号养权重、发主稿；矩阵号发差异化变体（待 --account 支持）。扫码后窗口自己关掉即可——登录态永久保留在 profile 目录，本页会自动探测到并更新。</p>
         </div>
       </section>
     </template>

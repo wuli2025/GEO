@@ -376,7 +376,6 @@ const npmReady = computed(() => !!report.value?.npm.found);
   <div :class="props.gate ? 'gate' : 'page'">
     <div class="card">
       <!-- 头 -->
-      <div class="badge"><span class="star"></span></div>
       <h1 class="title">环境检测与配置</h1>
       <p class="lead">
         北极星依托 <strong>Claude Code</strong> 在你本机干活。先帮你把运行环境安顿好——
@@ -563,7 +562,7 @@ const npmReady = computed(() => !!report.value?.npm.found);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(120% 80% at 50% -10%, #eef2f7 0%, var(--bg) 55%);
+  background: var(--bg);
   padding: 40px;
   overflow-y: auto;
 }
@@ -582,39 +581,10 @@ const npmReady = computed(() => !!report.value?.npm.found);
   border-radius: 6px;
   box-shadow: var(--shadow-lg);
   padding: 36px 40px 30px;
-  animation: cardIn 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 .page .card {
   box-shadow: var(--shadow-sm);
 }
-@keyframes cardIn {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.badge {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 18px;
-}
-.star {
-  position: relative;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 0 4px var(--primary-soft), 0 0 18px 4px rgba(44, 70, 97, 0.25);
-}
-.star::before,
-.star::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  background: linear-gradient(var(--g, to right), transparent, var(--primary), transparent);
-}
-.star::before { width: 40px; height: 1.5px; transform: translate(-50%, -50%); }
-.star::after { width: 1.5px; height: 40px; transform: translate(-50%, -50%); }
 
 .title {
   font-family: var(--serif);

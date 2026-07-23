@@ -1185,6 +1185,33 @@ mod tests {
         }
     }
 
+    /// copywriter 等旧岗退役后，「标题/钩子/润色/合规/排期」这类高频问法必须仍有人接。
+    /// 断言目标专家进入前 2（is_primary 区间），防止信号词表回退。
+    #[test]
+    fn routing_covers_common_media_asks() {
+        let cases = [
+            ("帮我起几个标题", "media-writer"),
+            ("开头的钩子不够抓人，帮我改", "media-writer"),
+            ("这篇稿子帮我润色一下", "media-writer"),
+            ("检查一下有没有敏感词或违规表述", "media-reviewer"),
+            ("下个月的发文排期怎么排", "media-strategist"),
+        ];
+        for (q, want) in cases {
+            let hit = expert_route(RouteRequest {
+                query: q.into(),
+                limit: Some(3),
+                group_filter: None,
+            });
+            assert!(
+                hit.iter().take(2).any(|m| m.expert.id == want),
+                "「{}」应路由到 {}，实际前 3：{:?}",
+                q,
+                want,
+                hit.iter().map(|m| m.expert.id.as_str()).collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn auto_match_returns_primary() {
         let results = expert_match_auto("帮我做个自媒体选题".into());

@@ -289,7 +289,6 @@ function dotColor(p: ProviderView) {
   <Teleport to="body">
     <div class="modal-overlay" @click="store.closeAdd()">
       <div class="modal" @click.stop>
-        <div class="m-accent" />
         <header class="m-head">
           <div class="m-title">{{ form.id && !selectedId ? "编辑供应商" : "添加新供应商" }}</div>
           <button class="icon-btn" @click="store.closeAdd()"><X :size="17" :stroke-width="1.8" /></button>
@@ -464,15 +463,10 @@ function dotColor(p: ProviderView) {
   inset: 0;
   z-index: 400;
   background: rgba(20, 20, 25, 0.28);
-  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  animation: ov 160ms ease;
-}
-@keyframes ov {
-  from { opacity: 0; }
 }
 .modal {
   width: min(740px, 96vw);
@@ -484,14 +478,6 @@ function dotColor(p: ProviderView) {
   border-radius: 16px;
   box-shadow: var(--shadow-lg), 0 0 0 1px var(--hairline);
   overflow: hidden;
-  animation: pop 200ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-@keyframes pop {
-  from { opacity: 0; transform: translateY(12px) scale(0.98); }
-}
-.m-accent {
-  height: 3px;
-  background: linear-gradient(90deg, var(--primary) 0%, var(--gold) 55%, var(--vermilion) 100%);
 }
 .m-head {
   display: flex;

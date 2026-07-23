@@ -22,6 +22,8 @@ export interface EvolutionData {
     cardsThisMonth: number;
     solidified: number;
     rolledBack: number;
+    /** 观察期超 7 天未裁决数：>0 时大屏该催办固化/回滚 */
+    overdue: number;
     evidence: string[];
   };
 }
@@ -55,6 +57,7 @@ const MOCK_EVOLUTION: EvolutionData = {
     cardsThisMonth: 7,
     solidified: 3,
     rolledBack: 1,
+    overdue: 0,
     evidence: [
       "探测「知乎被引率连涨 3 周」→ 知乎周篇数 3→4（调度进化）",
       "rule▸公众号标题公式 v3 → writer opening_formula v2→v3 → 过审率 +18%（Prompt 进化）",
@@ -88,7 +91,7 @@ function mapLive(
   insights: InsightCard[],
   timeline: EvolutionEntry[],
   versions: PromptVersion[],
-  fly: { health: number; monthInsights: number; solidified: number; rolledBack: number },
+  fly: { health: number; monthInsights: number; solidified: number; rolledBack: number; overdue: number },
 ): EvolutionData {
   const tl = [...timeline].sort((a, b) => b.createdAt - a.createdAt);
   return {
@@ -116,6 +119,7 @@ function mapLive(
       cardsThisMonth: fly.monthInsights,
       solidified: fly.solidified,
       rolledBack: fly.rolledBack,
+      overdue: fly.overdue,
       evidence: tl.filter((e) => e.evidence.length).map((e) => `${e.title}（${KIND_LABEL[e.kind] ?? e.kind}）`),
     },
   };

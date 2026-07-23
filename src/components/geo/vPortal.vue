@@ -16,6 +16,7 @@ import {
 import { toast } from "../../composables/useToast";
 import ExpertPromptDrawer from "./ExpertPromptDrawer.vue";
 import { openJobDetail, openJobId } from "./jobsBus";
+import { requestPlan } from "./planBus";
 
 const props = defineProps<{ sub: string; platform: string }>();
 
@@ -71,19 +72,33 @@ const jobByQueue = computed(() => {
 });
 const producing = ref<string | null>(null); // 正在排产/启动的 topic 或 queue id
 
-/** 选题一键排产：入队 → 标记 picked → 启动全链路 job → 打开生成流程 */
-async function produceTopic(t: MediaTopic) {
+/**
+ * 选题点「生成→投递」：不再立刻排产，先把规划请求投给对话框——
+ * 对话坞里流式出一份撰写规划，人看完点「开始」才真跑，点「否决」就作罢。
+ */
+function produceTopic(t: MediaTopic) {
   if (producing.value) return;
+  requestPlan({
+    laneKey: `portal:${plat.value}`,
+    platform: plat.value,
+    platformName: pname.value,
+    title: t.title,
+    angle: t.angle || undefined,
+    keywords: t.keywords && t.keywords.length ? t.keywords : undefined,
+    onApprove: () => doProduce(t),
+  });
+}
+
+/** 真正排产：入队 → 标记 picked → 启动全链路 job。记录落在对话框，不再自动弹抽屉。 */
+async function doProduce(t: MediaTopic): Promise<{ jobId: string }> {
   producing.value = t.id;
   try {
     const q = await mediaOps.queueAdd(plat.value, t.title, t.id);
     await mediaOps.topicUpdate(t.id, { status: "picked" }).catch(() => {});
     const j = await mediaJob.start({ queueId: q.id, topic: t.angle || undefined });
     toast.success(`已排产并启动流水线（job ${j.id.slice(0, 8)}）`);
-    openJobDetail(j.id);
     await loadState(); await loadJobs();
-  } catch (e: any) {
-    toast.error(e?.message ?? String(e));
+    return { jobId: j.id };
   } finally { producing.value = null; }
 }
 
@@ -218,7 +233,7 @@ function onClick(e: MouseEvent) {
               v-for="c in l.cards"
               :key="c.key"
               class="draft"
-              :title="c.jobId ? '点击查看这条流程的生成过程' : c.topic ? '点击：入队并启动全链路流水线' : '点击：启动全链路流水线'"
+              :title="c.jobId ? '点击查看这条流程的生成过程' : c.topic ? '点击：先在对话框出规划，再定夺开始/否决' : '点击：启动全链路流水线'"
               @click="laneCardClick(c)"
             >
               {{ c.title }}
@@ -260,7 +275,7 @@ function onClick(e: MouseEvent) {
                 <td>{{ (t.keywords || []).join("、") || "—" }}</td>
                 <td>{{ t.status }}</td>
                 <td style="white-space: nowrap">
-                  <button class="btn sm" :disabled="!!producing" title="入队并启动 生成→排版→投递 全链路，随后自动打开生成流程" @click="produceTopic(t)">
+                  <button class="btn sm" :disabled="!!producing" title="先在对话框里出一份撰写规划，你点「开始」才入队跑 生成→排版→投递 全链路" @click="produceTopic(t)">
                     <span v-if="producing === t.id" class="spin" style="margin-right: 4px">◔</span>生成→投递
                   </button>
                   <button class="btn sm danger" style="margin-left: 6px" @click="delTopic(t.id)">删除</button>

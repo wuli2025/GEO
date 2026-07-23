@@ -170,6 +170,18 @@ async function cancel() {
   } finally { busy.value = false; }
 }
 
+async function resume() {
+  if (!job.value) return;
+  busy.value = true;
+  try {
+    await mediaJob.resume(job.value.id);
+    toast.success("已从断点续跑：已完成的阶段自动跳过");
+    await refresh();
+  } catch (e: any) {
+    toast.error(e?.message ?? String(e));
+  } finally { busy.value = false; }
+}
+
 async function rerun() {
   const j = job.value;
   if (!j) return;
@@ -228,7 +240,8 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
             </table></div>
             <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
               <button v-if="isLive" class="btn sm danger" :disabled="busy" @click="cancel">取消 job</button>
-              <button v-else class="btn sm" :disabled="busy" @click="rerun">按同参数重跑</button>
+              <button v-if="!isLive && job.status !== 'done'" class="btn sm" :disabled="busy" @click="resume" title="从断点续跑：已完成且产物还在的阶段自动跳过">继续</button>
+              <button v-if="!isLive" class="btn sm ghost" :disabled="busy" @click="rerun">按同参数重跑</button>
               <button v-if="job.articlePath" class="btn sm ghost" @click="copyText(job.articlePath)">复制产物路径</button>
               <button class="btn sm ghost" @click="copyText(job.logPath)">复制日志路径</button>
             </div>
@@ -344,48 +357,28 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 </template>
 
 <style scoped>
-/* ═══ 苹果琉璃玻璃质感:磨砂遮罩 + 悬浮玻璃大面板 ═══ */
 .gd-mask {
-  background:
-    radial-gradient(1200px 800px at 20% -10%, rgba(66, 99, 235, .14), transparent 60%),
-    radial-gradient(1000px 700px at 110% 110%, rgba(124, 155, 255, .12), transparent 60%),
-    rgba(30, 38, 70, .28);
-  backdrop-filter: blur(14px) saturate(1.4);
-  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  background: var(--overlay);
   justify-content: center;
   align-items: center;
   padding: 18px;
   box-sizing: border-box;
-  animation: gd-fade var(--dur-fast, .15s) ease-out;
 }
-@keyframes gd-fade { from { opacity: 0; } to { opacity: 1; } }
 
 .gd.gd-wide {
   width: min(1480px, 97vw);
   height: 100%;
   max-height: calc(100vh - 36px);
-  background:
-    linear-gradient(160deg, rgba(255, 255, 255, .78), rgba(244, 246, 253, .62));
-  backdrop-filter: blur(42px) saturate(1.9);
-  -webkit-backdrop-filter: blur(42px) saturate(1.9);
-  border: 1px solid rgba(255, 255, 255, .75);
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 22px;
-  box-shadow:
-    0 32px 80px rgba(25, 35, 80, .28),
-    0 4px 18px rgba(25, 35, 80, .10),
-    inset 0 1px 0 rgba(255, 255, 255, .9);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
-  animation: gd-pop .26s cubic-bezier(.22, 1.1, .36, 1);
-}
-@keyframes gd-pop {
-  from { opacity: 0; transform: translateY(14px) scale(.985); }
-  to { opacity: 1; transform: none; }
 }
 
 .gd-h {
-  border-bottom: 1px solid rgba(255, 255, 255, .55);
-  background: linear-gradient(180deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, .18));
-  box-shadow: 0 1px 0 rgba(30, 40, 80, .05);
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-soft);
   letter-spacing: .01em;
 }
 .gd-h .xbtn {
@@ -395,32 +388,24 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: rgba(120, 130, 165, .12);
-  border: 1px solid rgba(255, 255, 255, .6);
-  transition: background-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  background: var(--bg-soft);
+  border: 1px solid var(--border-soft);
 }
-.gd-h .xbtn:hover { background: rgba(120, 130, 165, .22); transform: scale(1.06); }
+.gd-h .xbtn:hover { background: var(--selection-bg); }
 
-/* 三栏内的卡片统一玻璃化 */
 .gd-left .card,
 .gd-right,
 .gd-chat {
-  background: rgba(255, 255, 255, .58);
-  border: 1px solid rgba(255, 255, 255, .8);
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
   border-radius: 16px;
-  box-shadow:
-    0 2px 6px rgba(30, 40, 80, .05),
-    0 12px 32px rgba(30, 40, 80, .07),
-    inset 0 1px 0 rgba(255, 255, 255, .95);
-  backdrop-filter: blur(20px) saturate(1.5);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  box-shadow: var(--shadow-sm);
 }
 
-/* 基本信息表:去掉生硬网格线,改内嵌玻璃圆角 */
-.gd-left :deep(.tbl-wrap) { border-radius: 12px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .85); box-shadow: 0 1px 3px rgba(30, 40, 80, .06); }
+.gd-left :deep(.tbl-wrap) { border-radius: 12px; overflow: hidden; border: 1px solid var(--border-soft); }
 .gd-left :deep(table) { border-collapse: collapse; }
-.gd-left :deep(th) { background: rgba(240, 243, 252, .75); border: none; border-bottom: 1px solid rgba(30, 40, 80, .06); }
-.gd-left :deep(td) { background: rgba(255, 255, 255, .45); border: none; border-bottom: 1px solid rgba(30, 40, 80, .06); }
+.gd-left :deep(th) { background: var(--bg-soft); border: none; border-bottom: 1px solid var(--border-soft); }
+.gd-left :deep(td) { background: var(--panel); border: none; border-bottom: 1px solid var(--border-soft); }
 .gd-left :deep(tr:last-child th), .gd-left :deep(tr:last-child td) { border-bottom: none; }
 .gd-cols {
   flex: 1;

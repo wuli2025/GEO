@@ -175,12 +175,7 @@ export function vAutopilotHtml(sub: string): string {
       MOCK.policy.map(([lv, sc, ac]) => `<tr><td><span class="badge b-${lv.toLowerCase()}">${lv}${lv === "L1" ? " 自动生效" : lv === "L2" ? " 人工审批" : " 硬禁止"}</span></td><td>${sc}</td><td>${ac}</td></tr>`).join("") +
       `</table></div></div></section>`;
   }
-  if (sub === "cron") {
-    h += `<section><div class="card"><h3>定时任务表</h3><div class="tbl-wrap"><table>
-      <tr><th>时间</th><th>任务</th><th>干什么</th><th>状态</th></tr>` +
-      MOCK.cron.map((r) => `<tr><td style="white-space:nowrap">${r[0]}</td><td><b>${r[1]}</b></td><td>${r[2]}</td><td style="white-space:nowrap">${sdot(r[3][0], r[3][1])}</td></tr>`).join("") +
-      `</table></div></div></section>`;
-  }
+  // sub === "cron" 由 vAutopilot.vue 用真数据渲染（发文排期表）；设计稿部分见 cronDesignHtml()。
   if (sub === "cases") {
     h += `<section><div class="card"><h3>触发式调配示例</h3><div class="tbl-wrap"><table>
       <tr><th>触发</th><th>提案</th><th>级别</th></tr>
@@ -191,6 +186,14 @@ export function vAutopilotHtml(sub: string): string {
       </table></div></div></section>`;
   }
   return h;
+}
+
+/** 定时任务表的设计稿部分：规划中的系统级任务（尚未接真，真实排期表在其上方）。 */
+export function cronDesignHtml(): string {
+  return `<section><div class="card"><h3>系统级定时任务（设计稿 · 尚未接真）</h3><div class="tbl-wrap"><table>
+      <tr><th>时间</th><th>任务</th><th>干什么</th><th>状态</th></tr>` +
+    MOCK.cron.map((r) => `<tr><td style="white-space:nowrap">${r[0]}</td><td><b>${r[1]}</b></td><td>${r[2]}</td><td style="white-space:nowrap">${sdot(r[3][0], r[3][1])}</td></tr>`).join("") +
+    `</table></div><p class="foot">此表为目标形态的设计稿；已接真的是上方「各平台发文排期」（后端 30 分钟一轮巡检）。</p></div></section>`;
 }
 
 /* ── 大脑·进化（M10，数据来自 useEvolution） ─────────────────────────── */
@@ -225,7 +228,7 @@ export function vBrainHtml(sub: string, evo: EvolutionData): string {
     h += `<section><div class="grid g3">
       <div class="card stat"><h3>飞轮健康度</h3><div class="num" style="color:var(--ok)">${f.health}</div><div class="sub"></div></div>
       <div class="card stat"><h3>本月 insight 卡</h3><div class="num">${f.cardsThisMonth}<small>张</small></div><div class="sub"></div></div>
-      <div class="card stat"><h3>进化固化 / 回滚</h3><div class="num">${f.solidified}<small> / ${f.rolledBack}</small></div><div class="sub"></div></div>
+      <div class="card stat"><h3>进化固化 / 回滚</h3><div class="num">${f.solidified}<small> / ${f.rolledBack}</small></div><div class="sub">${f.overdue > 0 ? `<b style="color:var(--bad)">${f.overdue} 条观察期超 7 天未裁决</b>` : ""}</div></div>
       </div></section>
       <section><div class="card"><h3>本月 ${f.evidence.length} 条证据</h3><ol>` +
       f.evidence.map((e) => `<li>${e}</li>`).join("") +
@@ -244,32 +247,6 @@ export function vBrainHtml(sub: string, evo: EvolutionData): string {
       <tr><td><b>④ 四类进化执行</b></td><td>Prompt / Skill / 专家团 / 调度</td><td><code>evolution_log</code> + 提案</td></tr>
       <tr><td><b>⑤ 验证与固化</b></td><td>7 天 AB 观察，达预期→固化；未达→自动回滚</td><td>固化/回滚记录</td></tr>
       </table></div></div></section>`;
-  }
-  return h;
-}
-
-/* ── 知识库（M3 + M5） ─────────────────────────────────────────────────── */
-export function vKbHtml(sub: string): string {
-  let h = title("知识库", "资源 / 知识底座");
-  if (sub === "base") {
-    h += `<section><div class="card"><h3>三层知识底座</h3><div class="tbl-wrap"><table>
-      <tr><th style="width:110px">层</th><th>内容</th><th>载体</th></tr>
-      <tr><td><b>方法论层</b></td><td><code>/llmwiki/</code> 全库</td><td>kb ingest 入库，向量化</td></tr>
-      <tr><td><b>企业事实库</b></td><td>公司定位、产品参数、价格口径、认证资质、客户案例、第三方报道链接</td><td>结构化条目 + kb，单一事实源</td></tr>
-      <tr><td><b>经验反思库</b></td><td>被引/纠错/缺口清单沉淀的 insight 卡</td><td>循环工程回灌写入</td></tr>
-      </table></div></div></section>`;
-  }
-  if (sub === "gates") {
-    h += `<section><h3>双闸门</h3><div class="flow">
-      <div class="step">选题简报</div><span class="arr">→</span>
-      <div class="step evo"><b>闸门A · 写前注入</b></div><span class="arr">→</span>
-      <div class="step">writer 成稿</div><span class="arr">→</span>
-      <div class="step evo"><b>闸门B · 写后校验</b></div><span class="arr">→</span>
-      <div class="step">进质检门禁</div></div></section>`;
-  }
-  if (sub === "graph") {
-    h += `<section><div class="card"><h3>知识库星图</h3>
-      <div style="margin-top:8px"><span class="btn" data-go="wiki">打开星图知识库 →</span></div></div></section>`;
   }
   return h;
 }

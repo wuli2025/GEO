@@ -6,13 +6,14 @@
  * bar3 当前视图子标签）。深色控制台主题的全部 CSS 变量 scope 在 .geo-ops 下（geo/geo.css），
  * 不污染全局 app 样式。12 视图 + portal 门户视图为 geo/ 下子组件；能接真的接真后端。
  */
-import { ref, computed, onMounted, onBeforeUnmount, useTemplateRef } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount, useTemplateRef } from "vue";
 import "./geo/geo.css";
 import {
   PLATFORMS, ZONES, SUBTABS, KEYMAP, ico, pico, P,
 } from "./geo/data";
 import { chartTip } from "./geo/charts";
 import { openJobId, openJobDetail, closeJobDetail } from "./geo/jobsBus";
+import { planRequest } from "./geo/planBus";
 import JobDetailDrawer from "./geo/JobDetailDrawer.vue";
 import GlobalChatDock from "./geo/GlobalChatDock.vue";
 
@@ -22,6 +23,8 @@ import vAutopilot from "./geo/vAutopilot.vue";
 import vBrain from "./geo/vBrain.vue";
 import vAccounts from "./geo/vAccounts.vue";
 import vExperts from "./geo/vExperts.vue";
+import vBrand from "./geo/vBrand.vue";
+import vPromo from "./geo/vPromo.vue";
 import vKb from "./geo/vKb.vue";
 import vQuestions from "./geo/vQuestions.vue";
 import vEngine from "./geo/vEngine.vue";
@@ -35,7 +38,7 @@ defineOptions({ name: "GeoOpsCenter" });
 
 const VIEW_COMPONENTS: Record<string, any> = {
   dashboard: vDashboard, approvals: vApprovals, autopilot: vAutopilot, brain: vBrain,
-  accounts: vAccounts, experts: vExperts, kb: vKb, questions: vQuestions,
+  accounts: vAccounts, experts: vExperts, brand: vBrand, promo: vPromo, kb: vKb, questions: vQuestions,
   engine: vEngine, gate: vGate, layout: vLayout, settings: vSettings, portal: vPortal,
 };
 
@@ -52,12 +55,45 @@ const currentSub = computed(() => curSub(curSubKey.value));
 const currentComp = computed(() => VIEW_COMPONENTS[view.value] || vDashboard);
 const subtabs = computed(() => SUBTABS[curSubKey.value] || []);
 
+// ── bar3 子标签「更多」折叠：每视图保留前 N 个内联，其余收进下拉 ──
+const SUBTAB_PRIMARY: Record<string, number> = { dashboard: 1, autopilot: 1 };
+const primarySubs = computed(() => {
+  const n = SUBTAB_PRIMARY[curSubKey.value];
+  return n ? subtabs.value.slice(0, n) : subtabs.value;
+});
+const moreSubs = computed(() => {
+  const n = SUBTAB_PRIMARY[curSubKey.value];
+  return n ? subtabs.value.slice(n) : [];
+});
+const moreSubActive = computed(() => moreSubs.value.some((s) => s[0] === currentSub.value));
+
+// ── bar1「专家模式」折叠：资源/系统两区除账号矩阵、设置外全部收进下拉 ──
+const KEY_BY_ID: Record<string, [string, string, string, string]> = (() => {
+  const m: Record<string, [string, string, string, string]> = {};
+  ZONES.forEach((z) => z.keys.forEach((k) => { m[k[0]] = k; }));
+  return m;
+})();
+const mainZone = ZONES[0]; // 总控
+const EXPERT_KEYS = ["experts", "brand", "promo", "kb", "questions", "engine", "gate", "layout"];
+const expertKeys = EXPERT_KEYS.map((id) => KEY_BY_ID[id]).filter(Boolean);
+const expertActive = computed(() => EXPERT_KEYS.includes(view.value));
+const accountsKey = KEY_BY_ID["accounts"];
+const settingsKey = KEY_BY_ID["settings"];
+
+// ── 下拉菜单开合（点选后 / 点外部关闭）──
+const openMenu = ref<null | "expert" | "more">(null);
+function toggleMenu(m: "expert" | "more") {
+  openMenu.value = openMenu.value === m ? null : m;
+}
+
 function go(v: string, p?: string) {
   view.value = v;
   if (p !== undefined) platform.value = p;
+  openMenu.value = null;
 }
 function goSub(k: string) {
   sub.value = { ...sub.value, [curSubKey.value]: k };
+  openMenu.value = null;
 }
 
 // ── 全局 AI 对话坞（右侧常驻，可锚定当前泳道） ──
@@ -66,11 +102,17 @@ function toggleChat() {
   chatOpen.value = !chatOpen.value;
   localStorage.setItem("geo.globalChat.open", chatOpen.value ? "1" : "0");
 }
+// 选题投来规划请求时，对话坞若收着就自动展开，好让规划卡有处可落。
+watch(planRequest, (req) => { if (req) chatOpen.value = true; });
 const VIEW_LABEL: Record<string, string> = (() => {
   const m: Record<string, string> = {};
   ZONES.forEach((z) => z.keys.forEach((k) => { m[k[0]] = k[2]; }));
   return m;
 })();
+// 一个媒体门户一条泳道，各自独立会话；非门户视图共用「总控」泳道。
+const laneKey = computed(() =>
+  view.value === "portal" ? `portal:${platform.value}` : "hub",
+);
 const anchorLabel = computed(() => {
   if (openJobId.value) return "流程详情";
   if (view.value === "portal") return `${P(platform.value)?.name ?? platform.value}门户`;
@@ -158,8 +200,19 @@ function onKey(e: KeyboardEvent) {
   if (/^[1-9]$/.test(k)) go("portal", PLATFORMS[+k - 1].id);
   if (k === "0" && PLATFORMS[9]) go("portal", PLATFORMS[9].id);
 }
-onMounted(() => window.addEventListener("keydown", onKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
+// 点击下拉菜单之外 → 关闭
+function onDocClick(e: MouseEvent) {
+  if (!openMenu.value) return;
+  if (!(e.target as HTMLElement)?.closest?.(".menu-wrap")) openMenu.value = null;
+}
+onMounted(() => {
+  window.addEventListener("keydown", onKey);
+  window.addEventListener("click", onDocClick);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKey);
+  window.removeEventListener("click", onDocClick);
+});
 </script>
 
 <template>
@@ -168,10 +221,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <!-- bar1：三板块功能键 -->
       <div class="bar1">
         <div class="brand"><b>Polaris × GEO</b><small>自媒体运营中心</small></div>
-        <div class="zone" v-for="z in ZONES" :key="z.label">
-          <span class="zlab">{{ z.label }}</span>
+        <!-- 总控区 -->
+        <div class="zone">
+          <span class="zlab">{{ mainZone.label }}</span>
           <button
-            v-for="k in z.keys"
+            v-for="k in mainZone.keys"
             :key="k[0]"
             class="fkey"
             :class="{ active: view === k[0] }"
@@ -180,6 +234,48 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           >
             <span class="ic" v-html="ico(k[1])"></span>{{ k[2] }}
             <span v-if="k[0] === 'approvals' && pendTotal" class="pip">{{ pendTotal }}</span>
+          </button>
+        </div>
+        <!-- 账号矩阵（常驻） + 专家模式（更多） + 设置 -->
+        <div class="zone">
+          <button
+            class="fkey"
+            :class="{ active: view === accountsKey[0] }"
+            :title="`${accountsKey[2]} · 快捷键 ${accountsKey[3]}`"
+            @click="go(accountsKey[0])"
+          >
+            <span class="ic" v-html="ico(accountsKey[1])"></span>{{ accountsKey[2] }}
+          </button>
+          <div class="menu-wrap">
+            <button
+              class="fkey"
+              :class="{ active: expertActive || openMenu === 'expert' }"
+              title="专家模式 · 更多功能"
+              @click.stop="toggleMenu('expert')"
+            >
+              <span class="ic" v-html="ico('experts')"></span>专家模式
+              <span class="caret" :class="{ up: openMenu === 'expert' }">▾</span>
+            </button>
+            <div v-if="openMenu === 'expert'" class="menu menu-r">
+              <button
+                v-for="k in expertKeys"
+                :key="k[0]"
+                class="mitem"
+                :class="{ active: view === k[0] }"
+                @click="go(k[0])"
+              >
+                <span class="ic" v-html="ico(k[1])"></span>{{ k[2] }}
+                <span class="hk">{{ k[3] }}</span>
+              </button>
+            </div>
+          </div>
+          <button
+            class="fkey"
+            :class="{ active: view === settingsKey[0] }"
+            :title="`${settingsKey[2]} · 快捷键 ${settingsKey[3]}`"
+            @click="go(settingsKey[0])"
+          >
+            <span class="ic" v-html="ico(settingsKey[1])"></span>{{ settingsKey[2] }}
           </button>
         </div>
         <button
@@ -209,12 +305,28 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <!-- bar3：当前视图子标签 -->
       <div class="bar3" v-if="subtabs.length">
         <button
-          v-for="s in subtabs"
+          v-for="s in primarySubs"
           :key="s[0]"
           class="stab"
           :class="{ active: currentSub === s[0] }"
           @click="goSub(s[0])"
         >{{ s[1] }}</button>
+        <div v-if="moreSubs.length" class="menu-wrap">
+          <button
+            class="stab"
+            :class="{ active: moreSubActive || openMenu === 'more' }"
+            @click.stop="toggleMenu('more')"
+          >更多<span class="caret" :class="{ up: openMenu === 'more' }">▾</span></button>
+          <div v-if="openMenu === 'more'" class="menu">
+            <button
+              v-for="s in moreSubs"
+              :key="s[0]"
+              class="mitem"
+              :class="{ active: currentSub === s[0] }"
+              @click="goSub(s[0])"
+            >{{ s[1] }}</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -225,6 +337,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       </div>
       <GlobalChatDock
         v-if="chatOpen"
+        :lane-key="laneKey"
         :anchor-label="anchorLabel"
         :anchor-ctx="anchorCtx"
         @close="toggleChat"

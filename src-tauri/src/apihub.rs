@@ -806,6 +806,9 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
         "provider_set_link_mode" => ok(provider::provider_set_link_mode(bool_def(
             a, "link", false,
         ))?),
+        "provider_set_route_mode" => ok(provider::provider_set_route_mode(bool_def(
+            a, "route", false,
+        ))?),
         "provider_save" => {
             let input: provider::ProviderInput =
                 serde_json::from_value(a.get("input").cloned().unwrap_or(Value::Null))
@@ -983,6 +986,17 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
             opt_str(a, "articlePath"),
         )?),
         "mediaops_queue_delete" => ok(crate::mediaops::mediaops_queue_delete(req_str(a, "id")?)?),
+        // 发文排期（大脑调控的正门：source 传 "brain"，实际变更自动留进化卡）
+        "mediaops_schedule_list" => ok(crate::mediaops::mediaops_schedule_list()),
+        "mediaops_schedule_set" => ok(crate::mediaops::mediaops_schedule_set(
+            req_str(a, "platform")?,
+            opt_usize(a, "intervalDays").map(|n| n as u32),
+            opt_bool(a, "enabled"),
+            opt_str(a, "note"),
+            opt_str(a, "context"),
+            opt_str(a, "source"),
+        )?),
+        "mediaops_schedule_tick" => ok(crate::mediaops::mediaops_schedule_tick()),
         "mediaops_settings_set" => {
             let patch = serde_json::from_value(a.get("patch").cloned().unwrap_or(Value::Null))
                 .map_err(|e| format!("patch 参数无效：{e}"))?;
@@ -1045,6 +1059,30 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
         "prompt_version_delete" => ok(crate::evolution::prompt_version_delete(req_str(a, "id")?)?),
         "flywheel_summary" => ok(crate::evolution::flywheel_summary()),
 
+        // ── 推广植入（brand.rs）：brand.json 档案 + 分平台强度 + 硬广守卫 ──
+        "brand_profile_get" => ok(crate::brand::brand_profile_get()),
+        "brand_profile_set" => {
+            let profile = serde_json::from_value(a.get("profile").cloned().unwrap_or(Value::Null))
+                .map_err(|e| format!("profile 参数无效：{e}"))?;
+            ok(crate::brand::brand_profile_set(profile)?)
+        }
+        "brand_guard_test" => ok(crate::brand::brand_guard_test(
+            req_str(a, "platform")?,
+            req_str(a, "text")?,
+        )),
+        "brand_contract_preview" => {
+            ok(crate::brand::brand_contract_preview(req_str(a, "platform")?))
+        }
+        "brand_tactics" => ok(crate::brand::brand_tactics()),
+        "brand_doc_list" => ok(crate::brand::brand_doc_list()),
+        "brand_doc_save" => ok(crate::brand::brand_doc_save(
+            req_str(a, "name")?,
+            req_str(a, "content")?,
+        )?),
+        "brand_doc_delete" => ok(crate::brand::brand_doc_delete(req_str(a, "name")?)?),
+        "brand_doc_read" => ok(crate::brand::brand_doc_read(req_str(a, "name")?)?),
+        "brand_paths" => ok(crate::brand::brand_paths()),
+
         // ── 投递引擎全链路 job（media_engine.rs）──
         // 说明：generate 需宿主可执行 claude CLI；upload 需图形环境跑浏览器。
         // 纯容器里前者可用（镜像预装 claude）、后者会在脚本侧给出可读失败并落 fail 度量。
@@ -1055,8 +1093,10 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
             opt_str(a, "topic"),
             a.get("stages").map(|_| vec_str(a, "stages")),
             opt_str(a, "articlePath"),
+            opt_str(a, "model"),
         )?),
         "media_job_status" => ok(crate::media_engine::media_job_status(req_str(a, "jobId")?)?),
+        "media_job_resume" => ok(crate::media_engine::media_job_resume(req_str(a, "jobId")?)?),
         "media_job_list" => ok(crate::media_engine::media_job_list()),
         "media_job_cancel" => ok(crate::media_engine::media_job_cancel(req_str(a, "jobId")?)?),
         "media_job_log" => ok(crate::media_engine::media_job_log(

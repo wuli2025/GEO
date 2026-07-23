@@ -107,6 +107,18 @@
 .geo-ops .stab.active { background: var(--card2); border-color: var(--line); color: var(--ink); }
 .geo-ops .stab:active { background: var(--panel); }
 
+/* 下拉菜单（bar1 专家模式 / bar3 更多） */
+.geo-ops .menu-wrap { position: relative; display: inline-flex; }
+.geo-ops .caret { font-size: 9px; opacity: .7; margin-left: 3px; transition: transform var(--dur-fast) var(--ease-out); }
+.geo-ops .caret.up { transform: rotate(180deg); }
+.geo-ops .menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 168px; padding: var(--space-3xs); border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--panel); box-shadow: var(--shadow-2, 0 8px 24px rgba(0,0,0,.28)); display: flex; flex-direction: column; gap: 2px; }
+/* 靠右的下拉（如 bar1「专家模式」）：右边缘对齐按钮，向左铺开，不越过右侧的设置/助手 */
+.geo-ops .menu-r { left: auto; right: 0; }
+.geo-ops .mitem { display: inline-flex; align-items: center; gap: 8px; width: 100%; padding: 7px var(--space-xs); border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--dim); font-size: var(--text-s); font-family: inherit; line-height: 1; cursor: pointer; white-space: nowrap; text-align: left; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
+.geo-ops .mitem:hover { background: var(--card2); color: var(--ink2); }
+.geo-ops .mitem.active { background: var(--accent-soft); border-color: var(--line-2); color: var(--accent-ink); }
+.geo-ops .mitem .hk { margin-left: auto; font-size: var(--text-2xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* 工作区：内容区 + 右侧全局对话坞并排 */
 .geo-ops .geo-workarea { flex: 1; min-height: 0; display: flex; }
 .geo-ops .fkey.chatkey { margin-left: auto; }
@@ -236,6 +248,29 @@
 .geo-ops .inp, .geo-ops .ta { width: 100%; padding: 8px 11px; border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--code-bg); color: var(--ink); font-size: var(--text-s); box-sizing: border-box; font-family: inherit; }
 .geo-ops .inp:focus, .geo-ops .ta:focus { outline: none; border-color: var(--accent); }
 .geo-ops .ta { resize: vertical; min-height: 120px; line-height: 1.6; font-family: Consolas, ui-monospace, monospace; font-size: var(--text-xs); }
+/* 品牌档案（vBrand）：长表单 + 资料拖拽区。抽出来是因为这页原本内联样式最多，
+   而内联样式既拿不到设计令牌、也没法写 :hover / 媒体查询。 */
+.geo-ops .bd-bar { display: flex; flex-wrap: wrap; gap: var(--space-m); align-items: center; }
+.geo-ops .bd-form { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: var(--space-m); align-items: start; max-width: 840px; }
+.geo-ops .bd-form > b { padding-top: 8px; color: var(--dim); font-weight: 600; font-size: var(--text-s); }
+.geo-ops .bd-head { display: flex; align-items: center; gap: var(--space-xs); width: 100%; background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit; text-align: left; color: inherit; }
+.geo-ops .bd-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.geo-ops .bd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.geo-ops .drop { display: block; width: 100%; border: 1.5px dashed var(--line-2); border-radius: var(--radius-card); padding: var(--space-l); text-align: center; background: transparent; color: var(--ink2); font-family: inherit; font-size: var(--text-s); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.geo-ops .drop:hover, .geo-ops .drop:focus-visible { border-color: var(--accent); background: var(--card2); }
+.geo-ops .drop:disabled { opacity: .55; cursor: not-allowed; }
+.geo-ops .foot.flush { margin-top: 0; }
+.geo-ops .card h3.flush { margin-bottom: 0; }
+.geo-ops .inp.auto { width: auto; padding: 4px 8px; }
+.geo-ops .drop.on { border-color: var(--accent); background: var(--accent-soft); }
+.geo-ops .pre-box { white-space: pre-wrap; font-size: var(--text-xs); line-height: 1.6; background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--radius-ctl); padding: var(--space-m); overflow: auto; max-height: 420px; margin-top: var(--space-s); }
+.geo-ops .pre-box.sm { max-height: 320px; }
+.geo-ops .grow { flex: 1; }
+@media (max-width: 880px) {
+  .geo-ops .bd-form { grid-template-columns: 1fr; gap: var(--space-s); }
+  .geo-ops .bd-form > b { padding-top: 0; }
+}
+
 .geo-ops .spin { animation: geo-spin .9s linear infinite; display: inline-block; }
 @keyframes geo-spin { to { transform: rotate(360deg); } }
 

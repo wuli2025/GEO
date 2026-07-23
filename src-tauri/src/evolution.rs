@@ -6,7 +6,9 @@
 //! 为 0 说明系统退化成流水线（度量不再改变行为），大屏亮红灯。
 //!
 //! 三类 insight 卡：anti_pattern（教训）/ rule（规则）/ playbook（打法）。
-//! 检索权重 = 相似度 × (1 + λ × 功劳分)；固化一次进化 → 相关卡功劳分 +1。
+//! 检索注入（insights_for_prompt）：按生效范围命中（全局/平台/专家）→ 功劳分降序 → 取前几张
+//! 拼进写作提示词；固化一次进化 → 相关卡功劳分 +1，好经验自然排到前面。
+//! （无向量库，不做相似度；范围 + 功劳分是真实现，宁可简单是真的。）
 //!
 //! prompt 版本树：只允许改专家文件里 evolvable 锚点段落（style_notes / opening_formula …），
 //! 角色骨架与红线不可自改；全部版本化、可回滚。本模块存版本历史与激活指针，
@@ -132,7 +134,12 @@ pub struct FlywheelSummary {
     pub rolled_back: u64,
     /// 当前观察期进行中的条目数（不限本月）
     pub observing: u64,
+    /// 观察期超期未裁决数：观察中且创建已超 7 天——该固化或回滚了，大屏催办
+    pub overdue: u64,
 }
+
+/// 7 天观察期（PRD：达预期→固化，未达→回滚）。超期未裁决计入 overdue。
+const OBSERVE_WINDOW_SECS: i64 = 7 * 86_400;
 
 // ───────────────────────── 持久化 store ─────────────────────────
 
@@ -342,6 +349,40 @@ pub fn insight_delete(id: String) -> Result<(), String> {
     STORE.write().insights.retain(|c| c.id != id);
     persist();
     Ok(())
+}
+
+/// 注入写作提示词的最大卡数：经验要有优先级，不是越多越好——多了模型抓不住重点。
+const INJECT_CAP: usize = 6;
+
+/// 取应注入某专家某平台写作提示词的 insight 卡，渲染成 Markdown 经验块。
+/// 命中规则：scope 为「全局」/ 该平台 id / 该专家 id；排序：功劳分降序 → 新卡在前。
+/// 无命中返回空串（调用方直接拼接即可，不必判空）。这是飞轮「卡改变行为」的落地点。
+pub fn insights_for_prompt(expert_id: &str, platform: &str) -> String {
+    let store = STORE.read();
+    let mut hits: Vec<&InsightCard> = store
+        .insights
+        .iter()
+        .filter(|c| c.scope.is_empty() || c.scope == "全局" || c.scope == platform || c.scope == expert_id)
+        .collect();
+    if hits.is_empty() {
+        return String::new();
+    }
+    hits.sort_by(|a, b| {
+        b.credit
+            .partial_cmp(&a.credit)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.created_at.cmp(&a.created_at))
+    });
+    let mut out = String::from("\n\n---\n\n# 经验库（历史实测沉淀，写作时必须遵循）\n\n");
+    for c in hits.into_iter().take(INJECT_CAP) {
+        let label = match c.kind.as_str() {
+            "anti_pattern" => "教训·禁止",
+            "rule" => "规则",
+            _ => "打法",
+        };
+        out.push_str(&format!("- 【{label}】{}：{}\n", c.title, c.content));
+    }
+    out
 }
 
 // ───────────────────────── Commands: 进化时间线 ─────────────────────────
@@ -614,6 +655,9 @@ pub fn flywheel_summary() -> FlywheelSummary {
     for e in &store.timeline {
         if e.status == "观察中" {
             s.observing += 1;
+            if now - e.created_at > OBSERVE_WINDOW_SECS {
+                s.overdue += 1;
+            }
         }
         if e.created_at >= from && !e.evidence.is_empty() {
             s.health += 1;
