@@ -44,8 +44,6 @@ const cleaningCache = ref(false);
 
 const busy = computed(() => busyKind.value !== "");
 
-// 本次会话只自动装一次 shell, 避免失败时每次复检都反复弹 UAC
-let autoPwshTried = false;
 // 想装 Claude 但缺 npm 时: 先自动装 Node.js, 装完链式继续装 Claude (一次点击装齐)
 let chainClaudeAfterNode = false;
 
@@ -54,23 +52,10 @@ async function runCheck() {
   return report.value;
 }
 
-/**
- * claude 已装但缺可用 shell (真身 PowerShell 7 / Git Bash) → 自动装 PowerShell 7。
- * 否则用户进去对话时 claude 会报「找不到 PowerShell / bash」。仅启动关 (gate) 自动触发,
- * 每次会话最多一次。返回是否已发起安装 (true ⇒ 调用方应让出, 进入流式日志)。
- */
-function maybeAutoInstallShell(r: EnvReport): boolean {
-  if (!props.gate || !isTauri) return false;
-  if (!r.claude.found || r.shellReady || autoPwshTried || busy.value) return false;
-  autoPwshTried = true;
-  phase.value = "panel";
-  installPwsh();
-  banner.value = {
-    kind: "info",
-    text: "检测到缺少 Claude Code 可用的 Shell（PowerShell 7），正在自动为你安装——装好后即可正常对话，无需重启。",
-  };
-  return true;
-}
+// 注:这里曾有个 maybeAutoInstallShell() —— 启动关一发现缺 shell 就**自动替用户装
+// PowerShell 7**(弹 UAC、走 winget/MSI、国内常拉不动)。现已删除:应用改为**随安装包内置
+// Git Bash**(见 src-tauri/crates/polaris-kernel/src/doctor/bundled.rs), 干净 Windows
+// 开箱就有 shell, 不需要装任何东西。PowerShell 7 降级为纯可选, 只留手动按钮。
 
 onMounted(async () => {
   // 浏览器预览 / 非 Tauri: 启动关直接放行, 不打扰
@@ -107,8 +92,6 @@ onMounted(async () => {
     return;
   }
   if (r.ready) localStorage.setItem(READY_FLAG, "1");
-  // claude 在但缺 shell → 自动补装 PowerShell 7 (进入流式日志), 不再放任用户进去后对话报错
-  if (maybeAutoInstallShell(r)) return;
   phase.value = r.ready && props.gate ? "ready-skip" : "panel";
 });
 
@@ -160,9 +143,6 @@ async function finishInstall(ok: boolean, message: string) {
       return;
     }
   }
-
-  // 链式②: 刚装完 claude 但还缺 shell → 自动补上 PowerShell 7 (启动关, 仅 Windows)
-  maybeAutoInstallShell(r);
 }
 
 async function installClaude(method: "native" | "npm") {
@@ -337,12 +317,19 @@ function enter() {
 
 // 工具状态 → 状态点级别
 function level(t: ToolStatus): "ok" | "warn" | "bad" {
+  // PowerShell 7 是纯可选的: 只要有可用 shell(应用已内置 Git Bash)就算就绪, 不再标黄催装
+  if (t.key === "pwsh" && !t.found) return report.value?.shellReady ? "ok" : "warn";
   // Python 由 uv 按需托管: 装了 uv(或本机已有真 Python)即视作就绪, 否则提示装 uv
   if (t.key === "python") return report.value?.uv.found || t.found ? "ok" : "warn";
   if (t.found) return "ok";
   return t.required ? "bad" : "warn";
 }
 function statusText(t: ToolStatus): string {
+  // 随安装包内置的那份: 免安装、免管理员, 如实说明来源, 不显示成「用户装好了」
+  if (t.found && t.bundled) return "已就绪 · 随应用内置";
+  if (t.key === "pwsh" && !t.found) {
+    return report.value?.shellReady ? "可选 · 已内置 Git Bash" : "未安装 · 建议";
+  }
   if (t.key === "python") {
     if (t.found) return "可用";
     return report.value?.uv.found ? "由 uv 托管" : "建议装 uv 托管";
@@ -378,8 +365,9 @@ const npmReady = computed(() => !!report.value?.npm.found);
       <!-- 头 -->
       <h1 class="title">环境检测与配置</h1>
       <p class="lead">
-        北极星依托 <strong>Claude Code</strong> 在你本机干活。先帮你把运行环境安顿好——
-        缺什么一键补上，<strong>环境变量</strong>也会一并配好。
+        北极星依托 <strong>Claude Code</strong> 在你本机干活。运行 Python 脚本与命令所需的
+        <strong>uv、Python、Git Bash 已随应用内置</strong>——免安装、免管理员权限，装好即用。
+        只有 Claude Code 需要联网装一次，<strong>环境变量</strong>会一并配好。
       </p>
 
       <!-- 检测中 -->
@@ -465,9 +453,17 @@ const npmReady = computed(() => !!report.value?.npm.found);
                   {{ busyKind === "node" ? "安装中…" : "安装" }}
                 </button>
               </template>
+              <!-- PowerShell 7: 纯可选。已有可用 shell(内置 Git Bash)时不再催装,
+                   只留一个弱化入口给「就是想用 pwsh」的用户 -->
               <template v-else-if="t.key === 'pwsh' && !t.found">
-                <button class="btn" :disabled="busy" @click="installPwsh">
-                  {{ busyKind === "pwsh" ? "安装中…" : "安装" }}
+                <button
+                  class="btn"
+                  :class="{ text: report?.shellReady }"
+                  :disabled="busy"
+                  title="可选：Claude 已可用内置 Git Bash，装 PowerShell 7 只是多一种 shell 选择"
+                  @click="installPwsh"
+                >
+                  {{ busyKind === "pwsh" ? "安装中…" : report?.shellReady ? "可选安装" : "安装" }}
                 </button>
               </template>
               <template v-else-if="t.key === 'uv' && !t.found">

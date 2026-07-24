@@ -1,12 +1,16 @@
 <script setup lang="ts">
-/** 账号矩阵：账号总表全接真登录态（media_accounts_status / media_account_open / media_account_forget）；分发与风控红线为设计稿静态。 */
+/**
+ * 账号矩阵（一页到底，原子标签已撤）：账号总表全接真登录态
+ * （media_accounts_status / media_account_open / media_account_forget）；
+ * 其下接分布式发送与风控红线两块设计稿静态区。
+ */
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { title } from "./render";
 import { MOCK } from "./data";
 import { mediaAccounts, MEDIA_PLATFORMS, type MediaAccountStatus, type MediaPlatform } from "../../tauri";
 import { toast } from "../../composables/useToast";
 
-const props = defineProps<{ sub: string; platform: string }>();
+defineProps<{ sub?: string; platform: string }>();
 
 const head = computed(() =>
   title("账号矩阵", "资源 / 多账号管理与分布式发送 —— 每账号独立 profile + 独立 CDP 端口，cookie 互不串")
@@ -140,8 +144,7 @@ const risk2Html = `<section><div class="card"><h3>多账号风控红线（写进
   <div>
     <div v-html="head"></div>
 
-    <template v-if="props.sub === 'roster'">
-      <div class="callout y">
+    <div class="callout y">
         <b>引擎现状（诚实声明）</b>：每平台一个<b>主号</b> profile，登录态、最近活动、绑定状态均为后端实时探测的真值。
         矩阵多账号需给 draft_uploader 加 <code>--account</code> 参数（profile 目录与 CDP 端口按账号分配），改动很小但<b>尚未实现</b>。
       </div>
@@ -192,9 +195,8 @@ const risk2Html = `<section><div class="card"><h3>多账号风控红线（写进
           <p class="foot">主号养权重、发主稿；矩阵号发差异化变体（待 --account 支持）。扫码后窗口自己关掉即可——登录态永久保留在 profile 目录，本页会自动探测到并更新。</p>
         </div>
       </section>
-    </template>
 
-    <div v-else-if="props.sub === 'dispatch'" v-html="dispatchHtml"></div>
-    <div v-else v-html="risk2Html"></div>
+    <div v-html="dispatchHtml"></div>
+    <div v-html="risk2Html"></div>
   </div>
 </template>

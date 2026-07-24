@@ -1,7 +1,7 @@
 /**
  * 选题「先规划、再定夺」总线：
  * 门户选题池点「生成→投递」不再立刻排产，而是把一个规划请求投到这里 →
- * 常驻的全局对话坞（GlobalChatDock）接住它，在对话框里流式生成一份撰写规划
+ * 右侧助手（Assistant.vue）接住它，流式生成一份撰写规划
  * （选题角度 / 核心要点 / 结构大纲），底下摆「开始」「否决」两颗按钮：
  *   - 开始：调用 onApprove() 真正入队并启动全链路 job；
  *   - 否决：丢弃，选题留在池子里，什么都不发生。
@@ -11,10 +11,8 @@ import { ref } from "vue";
 import type { MediaPlatform } from "../../tauri";
 
 export interface PlanRequest {
-  /** 每次请求唯一，避免对话坞重复接同一条。 */
+  /** 每次请求唯一，避免助手重复接同一条。 */
   id: string;
-  /** 该规划该落到哪条泳道的对话框（如 `portal:wechat`）。 */
-  laneKey: string;
   platform: MediaPlatform;
   platformName: string;
   title: string;

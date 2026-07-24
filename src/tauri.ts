@@ -598,6 +598,16 @@ export interface MediaJob {
   stage: string; steps: MediaJobStep[]; articlePath?: string; logPath: string; error?: string;
   createdAt: number; updatedAt: number;
 }
+/** 一条 job 的总规划提示词（整篇文章的总纲，区别于步骤级的局部提示词） */
+export interface MediaJobPlan {
+  /** 提示词全文（空=这条 job 不含生成阶段，用的是现成正文） */
+  prompt: string;
+  /** 站在「写作」这一格上的专家（「改提示词」入口指向他） */
+  expertId: string;
+  expertName: string;
+  /** true=generate 已跑过，这是当时真正喂进去的原文；false=还没跑到，按当前配置现拼的预览 */
+  recorded: boolean;
+}
 export const mediaJob = {
   start: (a: { queueId?: string; platform?: string; title?: string; topic?: string; stages?: string[]; articlePath?: string; model?: string }) =>
     invoke<MediaJob>("media_job_start", a),
@@ -610,6 +620,8 @@ export const mediaJob = {
   log: (jobId: string, tailLines?: number) => invoke<string>("media_job_log", { jobId, tailLines }),
   /** 正文产物内容（.md / 公众号语义 .html） */
   article: (jobId: string) => invoke<string>("media_job_article", { jobId }),
+  /** 总规划提示词：整篇文章怎么写的那一整段（详情卡中栏默认内容） */
+  planPrompt: (jobId: string) => invoke<MediaJobPlan>("media_job_plan_prompt", { jobId }),
 };
 
 // ── 推广植入（GEO 品牌织入）module —— brand.json 档案 + 分平台强度 + 硬广守卫 ──
@@ -1986,6 +1998,8 @@ export interface ToolStatus {
   onPath: boolean;
   required: boolean;
   hint: string;
+  /** 命中的是随安装包内置的那份(uv / Python / Git Bash)——免安装免管理员，不必再催装 */
+  bundled: boolean;
 }
 export interface EnvReport {
   os: string;
@@ -1999,8 +2013,10 @@ export interface EnvReport {
   python: ToolStatus;
   claudeDir: string | null;
   claudeDirOnUserPath: boolean;
-  /** 是否有 claude 可用的 shell (真身 PowerShell 7 / Git Bash)；false ⇒ 对话会报缺 shell */
+  /** 是否有 claude 可用的 shell (真身 PowerShell 7 / Git Bash，含随包内置那份)；false ⇒ 对话会报缺 shell */
   shellReady: boolean;
+  /** 当前 shell 是随应用内置的 Git Bash ⇒ 用户无需另装 PowerShell 7 */
+  shellBundled: boolean;
   ready: boolean;
 }
 export interface PathFixResult {
@@ -2407,6 +2423,7 @@ function browserStub(cmd: string, _args?: Record<string, unknown>): unknown {
         onPath: found,
         required,
         hint: found ? "(browser stub) 已安装" : "未安装 —— 浏览器预览无法真实检测",
+        bundled: false, // 浏览器预览没有随包运行时
       });
       return {
         os: "browser",
@@ -2419,6 +2436,7 @@ function browserStub(cmd: string, _args?: Record<string, unknown>): unknown {
         claudeDir: null,
         claudeDirOnUserPath: true,
         shellReady: false,
+        shellBundled: false,
         ready: false,
       };
     }

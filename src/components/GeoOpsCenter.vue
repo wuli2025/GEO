@@ -14,8 +14,9 @@ import {
 import { chartTip } from "./geo/charts";
 import { openJobId, openJobDetail, closeJobDetail } from "./geo/jobsBus";
 import { planRequest } from "./geo/planBus";
+import { dockOpen, setDock, toggleDock, navRequest, consumeNav } from "./geo/assistantBus";
 import JobDetailDrawer from "./geo/JobDetailDrawer.vue";
-import GlobalChatDock from "./geo/GlobalChatDock.vue";
+import Assistant from "./geo/Assistant.vue";
 
 import vDashboard from "./geo/vDashboard.vue";
 import vApprovals from "./geo/vApprovals.vue";
@@ -56,7 +57,9 @@ const currentComp = computed(() => VIEW_COMPONENTS[view.value] || vDashboard);
 const subtabs = computed(() => SUBTABS[curSubKey.value] || []);
 
 // ── bar3 子标签「更多」折叠：每视图保留前 N 个内联，其余收进下拉 ──
-const SUBTAB_PRIMARY: Record<string, number> = { dashboard: 1, autopilot: 1 };
+// 现在只有「知识库」「设置」还有子标签，两者都短，无需折叠——留着这张表是为了
+// 以后哪个视图再长出一排子页时有地方按。
+const SUBTAB_PRIMARY: Record<string, number> = {};
 const primarySubs = computed(() => {
   const n = SUBTAB_PRIMARY[curSubKey.value];
   return n ? subtabs.value.slice(0, n) : subtabs.value;
@@ -74,7 +77,7 @@ const KEY_BY_ID: Record<string, [string, string, string, string]> = (() => {
   return m;
 })();
 const mainZone = ZONES[0]; // 总控
-const EXPERT_KEYS = ["experts", "brand", "promo", "kb", "questions", "engine", "gate", "layout"];
+const EXPERT_KEYS = ["experts", "brain", "promo", "kb", "questions", "engine", "gate", "layout"];
 const expertKeys = EXPERT_KEYS.map((id) => KEY_BY_ID[id]).filter(Boolean);
 const expertActive = computed(() => EXPERT_KEYS.includes(view.value));
 const accountsKey = KEY_BY_ID["accounts"];
@@ -96,34 +99,37 @@ function goSub(k: string) {
   openMenu.value = null;
 }
 
-// ── 全局 AI 对话坞（右侧常驻，可锚定当前泳道） ──
-const chatOpen = ref(localStorage.getItem("geo.globalChat.open") !== "0");
-function toggleChat() {
-  chatOpen.value = !chatOpen.value;
-  localStorage.setItem("geo.globalChat.open", chatOpen.value ? "1" : "0");
-}
-// 选题投来规划请求时，对话坞若收着就自动展开，好让规划卡有处可落。
-watch(planRequest, (req) => { if (req) chatOpen.value = true; });
+// ── 助手（右侧那块板，输入框长在它自己身上） ──
+// 开合状态放在 assistantBus：顶栏那枚键与助手自己的收起键共用一份真源；默认展开。
+// 选题投来规划请求时自动展开，好让规划卡有处可落。
+watch(planRequest, (req) => { if (req) setDock(true); });
 const VIEW_LABEL: Record<string, string> = (() => {
   const m: Record<string, string> = {};
   ZONES.forEach((z) => z.keys.forEach((k) => { m[k[0]] = k[2]; }));
   return m;
 })();
-// 一个媒体门户一条泳道，各自独立会话；非门户视图共用「总控」泳道。
-const laneKey = computed(() =>
-  view.value === "portal" ? `portal:${platform.value}` : "hub",
-);
-const anchorLabel = computed(() => {
+// 助手只有一条，平台不再是泳道而是**上下文**：人站在哪个门户上，
+// 这个平台就作为默认对象注进提示词；不在门户上则为 null（跨平台事务）。
+const activePlatform = computed(() => (view.value === "portal" ? platform.value : null));
+
+// 注入模型的「人此刻站在哪」——平台上下文见 activePlatform，这里只报界面位置。
+const viewLabel = computed(() => {
   if (openJobId.value) return "流程详情";
   if (view.value === "portal") return `${P(platform.value)?.name ?? platform.value}门户`;
   return VIEW_LABEL[view.value] ?? view.value;
 });
-const anchorCtx = computed(() => {
-  const parts = [`当前视图：${anchorLabel.value}`];
-  if (view.value === "portal") parts.push(`门户平台：${P(platform.value)?.name ?? platform.value}（id=${platform.value}）`);
+const viewCtx = computed(() => {
+  const parts: string[] = [];
   if (currentSub.value) parts.push(`子标签：${currentSub.value}`);
   if (openJobId.value) parts.push(`打开着的流程 job：${openJobId.value}`);
   return parts.join("；");
+});
+
+// 命令坞解析出的导航指令（「打开账号矩阵」「切到头条」）→ 真正跳转在这里做。
+watch(navRequest, (r) => {
+  if (!r) return;
+  consumeNav(r.id);
+  go(r.view, r.platform);
 });
 
 // ── 顶栏派生 ──
@@ -193,8 +199,15 @@ function onMove(e: MouseEvent) {
 const rootEl = useTemplateRef<HTMLDivElement>("root");
 function onKey(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement)?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
   if (!rootEl.value || rootEl.value.offsetParent === null) return; // 不可见（被切走）则不响应
+  // Ctrl/⌘+K：唤起助手。输入框已经长在助手身上了，助手收着时组件根本没挂载，
+  // 这个快捷键只能由外壳来接。
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    setDock(true);
+    return;
+  }
+  if (tag === "INPUT" || tag === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toUpperCase();
   if (KEYMAP[k]) { go(KEYMAP[k]); return; }
   if (/^[1-9]$/.test(k)) go("portal", PLATFORMS[+k - 1].id);
@@ -280,15 +293,15 @@ onBeforeUnmount(() => {
         </div>
         <button
           class="fkey chatkey"
-          :class="{ active: chatOpen }"
-          title="运营助手 · 全局 AI 对话（锚定当前泳道）"
-          @click="toggleChat"
-        >💬 助手</button>
+          :class="{ active: dockOpen }"
+          title="对话列表 · 助手的对话与生成记录（输入在底部那块玻璃）"
+          @click="toggleDock"
+        ><span class="ic" v-html="ico('chat')"></span>对话列表</button>
       </div>
 
       <!-- bar2：媒体门户切换器 + 健康条 -->
+      <!-- 「媒体门户」这个 zlab 去掉了：每枚键自带平台徽标，一眼就知道这排是什么 -->
       <div class="bar2">
-        <span class="zlab">媒体门户</span>
         <button
           v-for="p in PLATFORMS"
           :key="p.id"
@@ -330,17 +343,17 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 视图区 + 右侧全局对话坞 -->
-    <div class="geo-workarea">
+    <!-- 视图区 + 右侧泳道终端（玻璃板）+ 底部总控命令坞（常驻悬浮） -->
+    <div class="geo-workarea" :class="{ docked: dockOpen }">
       <div class="geo-main" ref="main" @click="onDelegate" @mousemove="onMove" @mouseleave="hideTip">
         <component :is="currentComp" :sub="currentSub" :platform="platform" />
       </div>
-      <GlobalChatDock
-        v-if="chatOpen"
-        :lane-key="laneKey"
-        :anchor-label="anchorLabel"
-        :anchor-ctx="anchorCtx"
-        @close="toggleChat"
+      <Assistant
+        v-if="dockOpen"
+        :view-label="viewLabel"
+        :view-ctx="viewCtx"
+        :platform="activePlatform"
+        @close="setDock(false)"
       />
     </div>
 
@@ -355,3 +368,29 @@ onBeforeUnmount(() => {
     />
   </div>
 </template>
+
+<style scoped>
+/* 「对话列表」这枚键是右侧那块板的总开关，全顶栏用得最勤的一个 —— 别和旁边
+   十几个功能键长得一样大。给它一圈边框、放大字号，并压低两像素与下一排对齐。 */
+.geo-ops .chatkey {
+  margin-left: auto;
+  margin-top: 3px;
+  padding: 9px 16px;
+  gap: 8px;
+  font-size: var(--text-m);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-ctl);
+}
+.geo-ops .chatkey :deep(.i) { width: 17px; height: 17px; }
+.geo-ops .chatkey.active { border-color: transparent; }
+
+/* 泳道栏与命令坞浮在内容之上 → 工作区当它们的定位参照系。
+   （这两条写在组件里而不是 geo.css：它们只服务于本组件模板里的这层布局） */
+.geo-workarea { position: relative; }
+/* 终端展开时给内容让位。只比玻璃板窄 8px：卡片的留白边缘从玻璃底下穿过去，
+   backdrop-filter 才有东西可折射（玻璃有厚度），但正文一个字都不被压住。 */
+.geo-workarea.docked .geo-main { padding-right: 396px; }
+@media (max-width: 1180px) {
+  .geo-workarea.docked .geo-main { padding-right: 346px; }
+}
+</style>

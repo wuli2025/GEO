@@ -2,7 +2,7 @@
 /**
  * 设置中心：原「API 中心」并入此处。
  * - chan/tier/img：模型通道 / 模型分层 / 生图通道（接真火山方舟 ark 组）；
- * - update：我们的更新（GitHub Releases 自动更新，转发 useUpdater 状态机）；
+ * - update：我们的更新（自建 CDN 主源 + 多源回退，转发 useUpdater 状态机）；
  * - env：环境医生（复用 EnvDoctor 面板模式，随时复检 / 重装）。
  */
 import { ref, computed, onMounted } from "vue";
@@ -24,7 +24,7 @@ const props = defineProps<{ sub: string; platform: string }>();
 
 // 头部随子页切换（api 三页共用旧文案，其余各自表述）
 const HEADS: Record<string, [string, string]> = {
-  update: ["我们的更新", "设置 / 应用自动更新 —— GitHub Releases 托管，下载安装后自动重启生效"],
+  update: ["我们的更新", "设置 / 应用自动更新 —— 自建 CDN 托管、多源自动回退，下载安装后自动重启生效"],
   env: ["环境医生", "设置 / 运行环境监测与一键安装修复（Claude Code / Node / Shell / uv）"],
 };
 const head = computed(() => {
@@ -232,7 +232,7 @@ const imgCode = computed(
       <section>
         <div class="card">
           <h3>我们的更新
-            <span style="font-size: var(--text-xs); color: var(--muted); font-weight: 400">GitHub Releases 托管 · 下载安装后自动重启</span>
+            <span style="font-size: var(--text-xs); color: var(--muted); font-weight: 400">自建 CDN 托管 · 多源自动回退 · 下载安装后自动重启</span>
           </h3>
           <div class="updrow">
             <div>

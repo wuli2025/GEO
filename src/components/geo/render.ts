@@ -8,7 +8,7 @@
 
  * 图表悬停用 data-chart/data-i，由壳层统一处理。
  */
-import { PLATFORMS, EXPERTS, MOCK, P, ico, sdot, esc } from "./data";
+import { PLATFORMS, MOCK, P, ico, sdot, esc } from "./data";
 import { stackedArea, lineChart, legend } from "./charts";
 import type { EvolutionData } from "../../composables/useEvolution";
 import type { MediaKpi, MediaJob } from "../../tauri";
@@ -21,20 +21,28 @@ export function title(t: string, c: string): string {
 const lnk = (go: string, txt: string, sub?: string) =>
   `<a class="glnk" data-go="${go}"${sub ? ` data-gosub="${sub}"` : ""}>${txt}</a>`;
 
+/* ── KPI 数值渲染 ──
+   空数据以前也走 32px 黑体，八张卡一起喊八个破折号——占位符不该比真数据还响。
+   无值时压成 muted，同时把「▲ — 环比」这类只在有数时才成立的修饰整条略去。 */
+const nil = (v: unknown) => v === "—" || v === "" || v == null;
+// 叫 kpiNum 而不是 num：热力表那段里已有个局部 num()（parseFloat），同名会互相遮蔽。
+const kpiNum = (v: unknown, unit = ""): string =>
+  nil(v) ? `<div class="num nil">—</div>` : `<div class="num">${v}${unit}</div>`;
+
 /* ── 数据看板（M8 运营大屏） ─────────────────────────────────────────── */
-export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi, jobs: MediaJob[] = []): string {
+export function vDashboardHtml(kpi: typeof MOCK.kpi = MOCK.kpi, jobs: MediaJob[] = []): string {
   const k = kpi;
   let h = title("数据看板", "总控 / 运营大屏");
-  if (sub === "kpi") {
+  {
     h += `<section><div class="grid g5">
-      <div class="card stat"><h3>近 7 天发布</h3><div class="num">${k.pub7}<small>篇</small></div><div class="sub">${k.runs} 次 run · ${k.runOk} 成功</div></div>
-      <div class="card stat"><h3>近 30 天发布</h3><div class="num">${k.pub30}<small>篇</small></div><div class="sub">篇均 ${k.avgWords} 字</div></div>
-      <div class="card stat"><h3>阅读 / 点击</h3><div class="num">${k.reads}</div><div class="sub"><span class="up">▲ ${k.readsMom}</span> 环比</div></div>
-      <div class="card stat"><h3>AI 来源占比</h3><div class="num">${k.aiShare}<small class="up">↑</small></div><div class="sub">${k.aiBreak}</div></div>
-      <div class="card stat"><h3>单篇成本</h3><div class="num">${k.cost}</div><div class="sub"></div></div>
-      <div class="card stat"><h3>30 天 token</h3><div class="num">${k.token}</div><div class="sub"></div></div>
-      <div class="card stat"><h3>30 天 LLM 成本</h3><div class="num">${k.llmCost}</div><div class="sub"></div></div>
-      <div class="card stat"><h3>待办</h3><div class="num">${k.pending}<small>待审</small></div><div class="sub">${sdot("warn", k.loginBad + " 个账号异常")} · ${lnk("approvals", "进队列 →")}</div></div>
+      <div class="card stat"><h3>近 7 天发布</h3>${kpiNum(k.pub7, "<small>篇</small>")}<div class="sub">${k.runs} 次 run · ${k.runOk} 成功</div></div>
+      <div class="card stat"><h3>近 30 天发布</h3>${kpiNum(k.pub30, "<small>篇</small>")}<div class="sub">篇均 ${k.avgWords} 字</div></div>
+      <div class="card stat"><h3>阅读 / 点击</h3>${kpiNum(k.reads)}<div class="sub">${nil(k.readsMom) ? "" : `<span class="up">▲ ${k.readsMom}</span> 环比`}</div></div>
+      <div class="card stat"><h3>AI 来源占比</h3>${kpiNum(k.aiShare)}<div class="sub">${nil(k.aiBreak) ? "" : k.aiBreak}</div></div>
+      <div class="card stat"><h3>单篇成本</h3>${kpiNum(k.cost)}<div class="sub"></div></div>
+      <div class="card stat"><h3>30 天 token</h3>${kpiNum(k.token)}<div class="sub"></div></div>
+      <div class="card stat"><h3>30 天 LLM 成本</h3>${kpiNum(k.llmCost)}<div class="sub"></div></div>
+      <div class="card stat"><h3>待办</h3>${kpiNum(k.pending, "<small>待审</small>")}<div class="sub">${sdot(k.loginBad ? "warn" : "ok", k.loginBad + " 个账号异常")} · ${lnk("approvals", "进队列 →")}</div></div>
     </div></section>
     <section><h3>最近投递</h3><div class="card"><div class="tbl-wrap"><table>` +
       (jobs.length
@@ -52,7 +60,7 @@ export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi, job
             : `<tr><td colspan="6"><p class="empty">暂无数据</p></td></tr>`)) +
       `</table></div></div></section>`;
   }
-  if (sub === "traffic") {
+  {
     h += `<section><div class="card"><h3>每日流量三层构成</h3>
       <div class="chart">${stackedArea(MOCK.traffic, "traffic")}</div>${legend(MOCK.traffic.series)}</div></section>
       <section><div class="grid g2">
@@ -62,19 +70,19 @@ export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi, job
         : `<p class="empty">暂无数据</p>`) +
       `</div></div>
       <div class="card"><h3>三张清单</h3>
-        <div style="margin-top:8px"><span class="btn sm" data-go="questions" data-gosub="lists">查看完整清单 →</span></div></div>
+        <div style="margin-top:8px"><span class="btn sm" data-go="questions">查看完整清单 →</span></div></div>
       </div></section>`;
   }
-  if (sub === "cite") {
+  {
     h += `<section><div class="card"><h3>五引擎品类词提及率</h3>
       <div class="chart">${lineChart(MOCK.engines, "engines")}</div>${legend(MOCK.engines.series)}</div></section>
       <section><div class="grid g3">
-      <div class="card stat"><h3>品类词提及率</h3><div class="num">—</div><div class="sub"></div></div>
-      <div class="card stat"><h3>声量份额 SoV</h3><div class="num">—</div><div class="sub"></div></div>
-      <div class="card stat"><h3>事实准确率</h3><div class="num">—</div><div class="sub"></div></div>
+      <div class="card stat"><h3>品类词提及率</h3><div class="num nil">—</div><div class="sub"></div></div>
+      <div class="card stat"><h3>声量份额 SoV</h3><div class="num nil">—</div><div class="sub"></div></div>
+      <div class="card stat"><h3>事实准确率</h3><div class="num nil">—</div><div class="sub"></div></div>
       </div></section>`;
   }
-  if (sub === "matrix") {
+  {
     const cols = MOCK.heat.cols, rows = MOCK.heat.rows;
     const num = (v: string | number) => parseFloat(String(v).replace(/,/g, ""));
     const ramp = ["var(--q1)", "var(--q2)", "var(--q3)", "var(--q4)", "var(--q5)"];
@@ -92,14 +100,9 @@ export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi, job
     h += `<section><div class="card"><h3>平台 × 指标热力表</h3><div class="tbl-wrap heat"><table>
       <tr><th>平台</th>${cols.map((c) => `<th style="text-align:center">${c}</th>`).join("")}</tr>${cells || `<tr><td colspan="${cols.length + 1}"><p class="empty">暂无数据</p></td></tr>`}</table></div></div></section>`;
   }
-  if (sub === "radar") {
-    h += `<section><div class="card"><h3>AI 爬虫雷达</h3><div class="bars">` +
-      (MOCK.radar.length
-        ? MOCK.radar.map(([n, v]) => `<div class="row" title="${n}：${v} 次"><span class="lab" style="width:auto">${n}</span><span class="track"><span class="fill" style="width:${((v / MOCK.radar[0][1]) * 100).toFixed(0)}%"></span></span><span class="val">${v}</span></div>`).join("")
-        : `<p class="empty">暂无数据</p>`) +
-      `</div></div></section>`;
-  }
-  if (sub === "health") {
+  // AI 爬虫雷达原本还有一张独立子页，与上面「流量与 AI 来源」里的那张同源同数据，
+  // 合并成一页后重复出现两次没有意义 —— 只留上面那张。
+  {
     const lvmap: Record<string, string> = { good: "ok", warning: "warn", serious: "warn", critical: "bad" };
     h += `<section><div class="card"><h3>日健康度</h3><div class="tbl-wrap"><table>
       <tr><th>项</th><th>详情</th></tr>` +
@@ -108,8 +111,8 @@ export function vDashboardHtml(sub: string, kpi: typeof MOCK.kpi = MOCK.kpi, job
         : `<tr><td colspan="2"><p class="empty">暂无数据</p></td></tr>`) +
       `</table></div></div></section>`;
   }
-  if (sub === "attr") {
-    h += `<section><div class="card"><div class="tbl-wrap"><table>
+  {
+    h += `<section><div class="card"><h3>归因口径说明</h3><div class="tbl-wrap"><table>
       <tr><th>层</th><th>数据源</th><th>可信度</th></tr>
       <tr><td><b>① AI 爬虫抓取</b></td><td>官网/博客服务器日志</td><td>${sdot("ok", "高")}</td></tr>
       <tr><td><b>② AI 引荐访问</b></td><td>官网埋点 → <code>traffic_events</code></td><td>${sdot("warn", "中")}</td></tr>
@@ -140,28 +143,29 @@ export function vApprovalsHtml(): string {
 }
 
 /* ── 自动规划（M9） ───────────────────────────────────────────────────── */
-export function vAutopilotHtml(sub: string): string {
-  let h = title("自动规划", "总控 / 自治调度");
-  if (sub === "policy") {
+/** 自动规划的设计稿区块（标题与真实排期表由 vAutopilot.vue 渲染在其上方）。 */
+export function vAutopilotHtml(): string {
+  let h = "";
+  {
     h += `<section><div class="grid g3">
-      <div class="card stat"><h3>本周提案</h3><div class="num">—</div><div class="sub"></div></div>
-      <div class="card stat"><h3>观察期中</h3><div class="num">—</div><div class="sub"></div></div>
-      <div class="card stat"><h3>本月自动回滚</h3><div class="num">—</div><div class="sub"></div></div>
+      <div class="card stat"><h3>本周提案</h3><div class="num nil">—</div><div class="sub"></div></div>
+      <div class="card stat"><h3>观察期中</h3><div class="num nil">—</div><div class="sub"></div></div>
+      <div class="card stat"><h3>本月自动回滚</h3><div class="num nil">—</div><div class="sub"></div></div>
       </div></section>
       <section><div class="card"><h3>可编辑记忆</h3><ul>
       <li>${lnk("brain", "大脑·进化 / insight 卡库", "cards")}</li>
       <li>${lnk("questions", "题库")}</li>
       <li>${lnk("kb", "知识库")}</li></ul></div></section>`;
   }
-  if (sub === "multi") {
+  {
     h += `<section><h3>规划回路</h3><div class="flow">
       <div class="step">① 选题规划</div><span class="arr">→</span>
       <div class="step">② 主稿产出</div><span class="arr">→</span>
       <div class="step evo">③ 账号分配</div><span class="arr">→</span>
       <div class="step evo">④ 变体生成</div><span class="arr">→</span>
-      <div class="step">⑤ 分发计划进审批<small>${lnk("accounts", "账号矩阵 / 分布式发送", "dispatch")}</small></div></div></section>`;
+      <div class="step">⑤ 分发计划进审批<small>${lnk("accounts", "账号矩阵 / 分布式发送")}</small></div></div></section>`;
   }
-  if (sub === "loop") {
+  {
     h += `<section><h3>决策回路</h3><div class="flow">
       <div class="step">读度量</div><span class="arr">→</span>
       <div class="step">读记忆</div><span class="arr">→</span>
@@ -169,14 +173,13 @@ export function vAutopilotHtml(sub: string): string {
       <div class="step">分级执行</div><span class="arr">→</span>
       <div class="step">观察期</div></div></section>`;
   }
-  if (sub === "risk") {
-    h += `<section><div class="card"><div class="tbl-wrap"><table>
+  {
+    h += `<section><div class="card"><h3>三级风险分级</h3><div class="tbl-wrap"><table>
       <tr><th style="width:110px">风险级</th><th>范围</th><th>处置</th></tr>` +
       MOCK.policy.map(([lv, sc, ac]) => `<tr><td><span class="badge b-${lv.toLowerCase()}">${lv}${lv === "L1" ? " 自动生效" : lv === "L2" ? " 人工审批" : " 硬禁止"}</span></td><td>${sc}</td><td>${ac}</td></tr>`).join("") +
       `</table></div></div></section>`;
   }
-  // sub === "cron" 由 vAutopilot.vue 用真数据渲染（发文排期表）；设计稿部分见 cronDesignHtml()。
-  if (sub === "cases") {
+  {
     h += `<section><div class="card"><h3>触发式调配示例</h3><div class="tbl-wrap"><table>
       <tr><th>触发</th><th>提案</th><th>级别</th></tr>
       <tr><td>探测发现「知乎被引率连涨 3 周」</td><td>知乎周篇数 3→4，并把知乎打法萃取成 playbook 卡供他平台参考</td><td><span class="badge b-l1">L1</span></td></tr>
@@ -197,9 +200,9 @@ export function cronDesignHtml(): string {
 }
 
 /* ── 大脑·进化（M10，数据来自 useEvolution） ─────────────────────────── */
-export function vBrainHtml(sub: string, evo: EvolutionData): string {
-  let h = title("大脑 · 进化", "总控 / 循环工程");
-  if (sub === "timeline") {
+export function vBrainHtml(evo: EvolutionData): string {
+  let h = "";
+  {
     h += `<section><div class="card"><div class="legend" style="margin:0 0 12px">
         <span><i style="background:var(--s1)"></i>Prompt 进化</span><span><i style="background:var(--s2)"></i>Skill 进化</span>
         <span><i style="background:var(--s3)"></i>专家团进化</span><span><i style="background:var(--s4)"></i>调度进化</span></div>
@@ -210,20 +213,20 @@ export function vBrainHtml(sub: string, evo: EvolutionData): string {
     }).join("") +
       `</div></div></section>`;
   }
-  if (sub === "cards") {
+  {
     const bc: Record<string, string> = { anti_pattern: "b-anti", rule: "b-rule", playbook: "b-play" };
     h += `<section><div class="card"><h3>insight 卡库</h3><div class="tbl-wrap"><table>
       <tr><th>类型</th><th>标题</th><th>内容</th><th>范围</th><th>功劳分</th><th>日期</th></tr>` +
       evo.cards.map((r) => `<tr><td><span class="badge ${bc[r[0]]}">${r[0]}</span></td><td><b>${r[1]}</b></td><td>${r[2]}</td><td>${r[3]}</td><td style="white-space:nowrap">${r[4]}</td><td>${r[5]}</td></tr>`).join("") +
       `</table></div></div></section>`;
   }
-  if (sub === "tree") {
+  {
     h += `<section><div class="card"><h3>prompt 版本树</h3><div class="tbl-wrap"><table>
       <tr><th>专家（补丁）</th><th>版本</th><th>状态与绩效</th><th>变更 / 结局</th></tr>` +
       evo.tree.map((r) => `<tr><td>${r[0]}</td><td><b>${r[1]}</b></td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("") +
       `</table></div></div></section>`;
   }
-  if (sub === "flywheel") {
+  {
     const f = evo.flywheel;
     h += `<section><div class="grid g3">
       <div class="card stat"><h3>飞轮健康度</h3><div class="num" style="color:var(--ok)">${f.health}</div><div class="sub"></div></div>
@@ -234,7 +237,7 @@ export function vBrainHtml(sub: string, evo: EvolutionData): string {
       f.evidence.map((e) => `<li>${e}</li>`).join("") +
       `</ol></div></section>`;
   }
-  if (sub === "dual") {
+  {
     h += `<section><h3>主 Loop = 生产环 ⊕ 进化环</h3><div class="flow">
       <div class="step">生产环（日频）</div>
       <span class="arr">⇄</span>
@@ -252,9 +255,9 @@ export function vBrainHtml(sub: string, evo: EvolutionData): string {
 }
 
 /* ── 题库（探测 + 选题池） ────────────────────────────────────────────── */
-export function vQuestionsHtml(sub: string): string {
+export function vQuestionsHtml(): string {
   let h = title("题库", "资源 / 探测题 + 选题池");
-  if (sub === "bank") {
+  {
     const rows = Object.entries(MOCK.questions).flatMap(([k, v]) => v.map((r) => [P(k)?.name ?? k, ...r]));
     h += `<section><div class="card"><h3>题库与选题池</h3><div class="tbl-wrap"><table>
       <tr><th>平台</th><th>问题</th><th>主打引擎</th><th>上次探测结果</th><th>归入清单</th></tr>` +
@@ -263,14 +266,14 @@ export function vQuestionsHtml(sub: string): string {
         : `<tr><td colspan="5"><p class="empty">暂无数据</p></td></tr>`) +
       `</table></div></div></section>`;
   }
-  if (sub === "lists") {
-    h += `<section><div class="grid g3">
+  {
+    h += `<section><h3>三张清单</h3><div class="grid g3">
       <div class="card"><h3>被引清单</h3><p class="empty">暂无数据</p></div>
       <div class="card"><h3>纠错清单</h3><p class="empty">暂无数据</p></div>
       <div class="card"><h3>缺口清单</h3><p class="empty">暂无数据</p></div>
       </div></section>`;
   }
-  if (sub === "probe") {
+  {
     h += `<section><div class="card"><h3>周探测机制</h3><div class="flow">
       <div class="step">题库问五引擎</div><span class="arr">→</span>
       <div class="step">规则打分</div><span class="arr">→</span>
@@ -281,15 +284,15 @@ export function vQuestionsHtml(sub: string): string {
 }
 
 /* ── 投递引擎（M2） ───────────────────────────────────────────────────── */
-export function vEngineHtml(sub: string): string {
+export function vEngineHtml(): string {
   let h = title("投递引擎", "系统 / 投递矩阵");
-  if (sub === "keep") {
+  {
     h += `<section><h3>保窗机制</h3><div class="flow">
       <div class="step">detached Chrome 独立拉起</div><span class="arr">→</span>
       <div class="step">CDP 接管</div><span class="arr">→</span>
       <div class="step ok">断连不关窗，窗口常驻</div></div></section>`;
   }
-  if (sub === "chain") {
+  {
     h += `<section><h3>投递全链路</h3><div class="flow">
       <div class="step">① 开编辑页</div><span class="arr">→</span>
       <div class="step">② 登录检测</div><span class="arr">→</span>
@@ -298,7 +301,7 @@ export function vEngineHtml(sub: string): string {
       <div class="step">⑤ 存草稿 + 等回执</div><span class="arr">→</span>
       <div class="step ok">⑥ <b>断连保窗</b></div></div></section>`;
   }
-  if (sub === "ledger") {
+  {
     h += `<section><div class="card"><h3>七平台「最后一步」卡点总账（真机记录，改版只改选择器）</h3><div class="tbl-wrap"><table>
       <tr><th>平台</th><th>最后一步长什么样</th><th>卡点（真机）</th><th>处置状态</th></tr>
       <tr><td><b>头条号</b></td><td>无存草稿按钮，页脚自动保存</td><td>老配置点按钮落空 → Ctrl+S 兜底弹浏览器保存框且不存草稿；回执长期停「保存中...」不 settle</td><td>${sdot("ok", "")}改 auto_save 只等页脚回执，禁 Ctrl+S；「保存中」兜底接受</td></tr>
@@ -311,7 +314,7 @@ export function vEngineHtml(sub: string): string {
       <tr><td colspan="2"><b>通用（所有平台）</b></td><td>① 保存回执只等 12s 常报「未见明确回执」→ 文案引导窗口目检；② 贴图曾把「选中态正文」整段替换掉（ProseMirror/Draft 有自己的选区模型，JS 层 collapse 无效）→ 已改真实光标 Ctrl+Home 收拢选区；③ <b>脚本一退窗口就关</b>，预览做不了</td><td>${sdot("ok", "")}③ 为本次核心修复：CDP 保窗，两阶段验证通过</td></tr>
       </table></div></div></section>`;
   }
-  if (sub === "matrix2") {
+  {
     h += `<section><div class="card"><h3>平台 × 方案选型</h3><div class="tbl-wrap"><table>
       <tr><th>平台</th><th>投递方式</th><th>适配</th><th>说明</th></tr>` +
       PLATFORMS.map((p) => {
@@ -324,20 +327,20 @@ export function vEngineHtml(sub: string): string {
 }
 
 /* ── 质检门禁（M4） ───────────────────────────────────────────────────── */
-export function vGateHtml(sub: string): string {
+export function vGateHtml(): string {
   let h = title("质检门禁", "系统 / 评分器与两级门禁");
-  if (sub === "scorer") {
+  {
     h += `<section><div class="card"><h3>GEO 九信号评分器</h3><div class="tbl-wrap"><table>
       <tr><th>信号</th><th class="num-cell">权重</th><th>判定</th><th>实现</th></tr>` +
       MOCK.scorer.map(([n, w, d, i]) => `<tr><td><b>${n}</b></td><td class="num-cell">${w}</td><td>${d}</td><td>${i}</td></tr>`).join("") +
       `<tr><td colspan="1"><b>合计</b></td><td class="num-cell"><b>100</b></td><td colspan="2"></td></tr>
       </table></div></div></section>`;
   }
-  if (sub === "err") {
+  {
     h += `<section><div class="card"><h3>error 级（直接拦）</h3><div class="grid g2"><div><ol>` + MOCK.gateErr.slice(0, 6).map((x) => `<li>${x}</li>`).join("") + `</ol></div>
       <div><ol start="7">` + MOCK.gateErr.slice(6).map((x) => `<li>${x}</li>`).join("") + `</ol></div></div></div></section>`;
   }
-  if (sub === "warn") {
+  {
     h += `<section><div class="card"><h3>warning 级（放行但留痕）</h3><div class="grid g2"><div><ol>` + MOCK.gateWarn.slice(0, 5).map((x) => `<li>${x}</li>`).join("") + `</ol></div>
       <div><ol start="6">` + MOCK.gateWarn.slice(5).map((x) => `<li>${x}</li>`).join("") + `</ol></div></div></div></section>`;
   }
@@ -345,20 +348,20 @@ export function vGateHtml(sub: string): string {
 }
 
 /* ── 排版中心 ─────────────────────────────────────────────────────────── */
-export function vLayoutHtml(sub: string): string {
+export function vLayoutHtml(): string {
   let h = title("排版中心", "系统 / 配图与排版");
-  if (sub === "cover") {
+  {
     h += `<section><div class="card"><h3>平台封面规格表</h3><div class="tbl-wrap"><table>
       <tr><th>平台</th><th>封面规格</th><th>上传通道</th></tr>` +
       PLATFORMS.map((p) => `<tr><td><b>${p.name}</b></td><td>${p.cover}</td><td>${p.adapter === "delegate" ? "专用链路" : p.id === "baijia" ? "设置封面弹窗（accept=image）" : p.id === "douyin" ? "file_chooser 图库（首图即封面）" : "正文首图（平台自动采用）"}</td></tr>`).join("") +
       `</table></div></div></section>`;
   }
-  if (sub === "theme") {
+  {
     h += `<section><div class="card"><h3>版式与主题参数</h3><ul>
       <li><b>guizang-social-card</b>：小红书图卡 + 公众号封面对</li>
       <li><b>md2wechat</b>：公众号正文主题</li></ul></div></section>`;
   }
-  if (sub === "how") {
+  {
     h += `<section><div class="card"><h3>排版微调入口</h3><p>稿件卡 →「配图排版」步可打开排版预览器，切换版式/主题参数，保存为该平台默认。</p></div></section>`;
   }
   return h;
@@ -373,13 +376,22 @@ export function vApiTierHtml(): string {
       </table></div></div></section>`;
 }
 
-/* 门户静态区块（board/team/blockers/style），实数区块由 vPortal 组件处理 */
+/* 门户抬头（标题 + 适配/登录态条）。门户正文只剩「工作流 + 专家团补丁」两块，
+   都吃真数据、都可交互，故由 vPortal 组件直接渲染，这里不再有静态区块。 */
+
+/** 门户标题块。单拆出来是因为 vPortal 要把它与右上角两颗主功能大按钮排成同一行。 */
+export function portalTitleHtml(pid: string): string {
+  const p = P(pid);
+  if (!p) return "";
+  return title(`${p.name} 门户`, `媒体门户 / 独立工作台 —— 主打 ${p.ai}`);
+}
+
+/** 标题以下的抬头（适配/登录态条 + 告警）；标题见 portalTitleHtml。 */
 export function portalHeaderHtml(pid: string): string {
   const p = P(pid);
   if (!p) return `<div class="callout r">请从顶栏「媒体门户」选一个平台</div>`;
   const b = { full: "b-full", partial: "b-partial", delegate: "b-delegate", planned: "b-planned" }[p.adapter];
-  let h = title(`${p.name} 门户`, `媒体门户 / 独立工作台 —— 主打 ${p.ai}`);
-  h += `<section><div class="card" style="padding:11px 16px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:var(--text-s);color:var(--dim)">
+  let h = `<section><div class="card" style="padding:11px 16px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:var(--text-s);color:var(--dim)">
     <span class="badge ${b}">适配 ${p.adapterText}</span><span class="badge b-ghost">${p.engine}</span>
     <span style="margin-left:auto"></span>${sdot(p.login === "ok" ? "ok" : p.login === "none" ? "idle" : "warn", (p.login === "ok" ? "登录态正常" : p.login === "none" ? "尚未接入" : "账号/网络异常") + " · " + p.loginNote)}</div></div></section>`;
   if (p.login === "none") h += `<div class="callout"><b>本门户尚未接入：</b>${p.engine}</div>`;
@@ -387,45 +399,3 @@ export function portalHeaderHtml(pid: string): string {
   return h;
 }
 
-/** 看板泳道由 vPortal 用真实选题池/队列/job 渲染。 */
-export function portalBoardHtml(_pid: string): string {
-  return ``;
-}
-
-export function portalBlockersHtml(pid: string): string {
-  const p = P(pid)!;
-  let h = `<section><div class="card"><h3>${p.login === "none" ? "接入前的预判风险" : "最后一步卡点档案"}</h3><div class="tbl-wrap"><table>
-    <tr><th style="width:210px">${p.login === "none" ? "预判风险" : "卡点"}</th><th>${p.login === "none" ? "依据与前置问题" : "现象与处置"}</th></tr>` +
-    p.blockers.map(([k, v]) => `<tr><td><b>${k}</b></td><td>${v}</td></tr>`).join("") +
-    `</table></div></div></section>`;
-  return h;
-}
-
-export function portalStyleHtml(pid: string): string {
-  const p = P(pid)!;
-  return `<section><div class="grid g2">
-    <div class="card"><h3>平台画像</h3><div class="kv">
-      <b>打的 AI 引擎</b><span><b>${p.ai}</b></span><b>封面规格</b><span>${p.cover}</span>
-      <b>排期</b><span>${p.weekPlan} 篇/周</span></div>
-      <p style="margin-top:9px">${p.style}</p></div>
-    <div class="card"><h3>红线</h3><p>${p.redline}</p></div>
-    </div></section>
-    <section><div class="card"><h3>CLAUDE.md 文风宪法</h3><div class="tbl-wrap"><table>
-    <tr><th style="width:110px">区块</th><th>内容</th></tr>
-    <tr><td><b>平台画像</b></td><td>打 ${p.ai}</td></tr>
-    <tr><td><b>文体规范</b></td><td>${p.style}</td></tr>
-    <tr><td><b>红线</b></td><td>${p.redline}</td></tr>
-    </table></div><div style="margin-top:8px"><span class="btn sm" data-act="edit-overlay" data-expert="media-writer">改本平台写作补丁</span>
-    <span class="btn sm ghost" data-go="brain" data-gosub="tree">看 prompt 版本树 →</span></div></div></section>`;
-}
-
-/** 门户「专家团补丁」表：其余专家静态展示，"编辑补丁"由组件挂 data-act。 */
-export function portalTeamHtml(pid: string): string {
-  const p = P(pid)!;
-  const rows = EXPERTS.filter((e) => ["writer", "typesetter", "publisher", "image-director", "reviewer"].includes(e[1]));
-  return `<section><div class="card"><h3>本平台的专家团补丁</h3>
-    <p style="margin-bottom:9px">${p.patch}</p><div class="tbl-wrap"><table>
-    <tr><th>专家</th><th>本平台补丁</th><th></th></tr>` +
-    rows.map((e) => `<tr><td><code>${e[1]}</code> ${e[2]}</td><td>${e[7]}</td><td style="white-space:nowrap"><span class="btn sm" data-act="edit-overlay" data-expert="${e[1]}">编辑补丁</span></td></tr>`).join("") +
-    `</table></div><div style="margin-top:8px"><span class="btn sm ghost" data-go="experts">看完整阵容 →</span></div></div></section>`;
-}

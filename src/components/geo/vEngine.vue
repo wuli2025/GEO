@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { vEngineHtml } from "./render";
 import { mediaJob, type MediaJob } from "../../tauri";
 import { openJobDetail, openJobId } from "./jobsBus";
-const props = defineProps<{ sub: string; platform: string }>();
-const html = computed(() => vEngineHtml(props.sub));
+defineProps<{ sub?: string; platform: string }>();
+const html = computed(() => vEngineHtml());
 
 // ── 全链路 job 试跑（media_engine.rs：generate→typeset→upload） ──
 const PLATFORMS: [string, string][] = [

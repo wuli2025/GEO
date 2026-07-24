@@ -9,7 +9,7 @@ import { EXPERTS } from "./data";
 import { expertMedia } from "../../tauri";
 import ExpertPromptDrawer from "./ExpertPromptDrawer.vue";
 
-const props = defineProps<{ sub: string; platform: string }>();
+const props = defineProps<{ sub?: string; platform: string }>();
 
 const head = title("专家阵容", "资源 / M7 统一专家团 —— 一套专家团 + 平台提示词补丁（不再维护「公共池 + 平台团」两套体系）");
 
@@ -98,9 +98,9 @@ function onClick(e: MouseEvent) {
 <template>
   <div @click="onClick">
     <div v-html="head"></div>
-    <div v-if="props.sub === 'roster'" v-html="rosterHtml"></div>
-    <div v-else-if="props.sub === 'format'" v-html="formatHtml"></div>
-    <div v-else v-html="perfHtml"></div>
+    <div v-html="rosterHtml"></div>
+    <div v-html="formatHtml"></div>
+    <div v-html="perfHtml"></div>
 
     <ExpertPromptDrawer
       v-if="editing"

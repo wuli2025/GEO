@@ -2,7 +2,7 @@
 /**
  * 推广植入（GEO 品牌织入）——「模块选点与优化方案」的可视化落地板块。
  *
- * 本页只管**怎么用**（三个子页）：
+ * 本页只管**怎么用**，一页到底（子标签已撤）：
  *   植入逻辑：在哪儿植（generate 拼 prompt 处）、为什么（写作时织入 ≠ 写完后贴）；
  *   强度矩阵：分平台 强/弱/零 植入（可视化编辑，落回 brand.json）；
  *   硬广守卫：Rust 确定性拦截的说明 + 现场试打。
@@ -14,7 +14,7 @@ import { PLATFORMS } from "./data";
 import { brand, type BrandProfile } from "../../tauri";
 import { toast } from "../../composables/useToast";
 
-const props = defineProps<{ sub: string; platform: string }>();
+defineProps<{ sub?: string; platform: string }>();
 
 const head = computed(() =>
   title("推广植入", "资源 / GEO 品牌织入 —— 在写作时织入，而不是写完后再贴")
@@ -117,7 +117,7 @@ const logicHtml = `
     <div v-html="head"></div>
 
     <!-- ① 植入逻辑 -->
-    <template v-if="props.sub === 'logic'">
+    <template>
       <div v-html="logicHtml"></div>
       <section>
         <div class="card">
@@ -136,7 +136,7 @@ const logicHtml = `
     </template>
 
     <!-- ② 强度矩阵 -->
-    <template v-else-if="props.sub === 'matrix'">
+    <template>
       <div class="callout y"><b>矩阵不是拍脑袋</b>：依据各平台画像固化——小红书「硬广容忍度最低，品牌名换成某厂商仍有干货才安全」；百家号「主体名与官网/事实库一致」。默认矩阵保守（未知平台一律弱植入），要放开在此显式改。</div>
       <section>
         <div class="card">
@@ -172,7 +172,7 @@ const logicHtml = `
     </template>
 
     <!-- ③ 硬广守卫 -->
-    <template v-else>
+    <template>
       <div class="callout y"><b>防封底线是代码，不是自觉</b>：正文生成后，Rust 按本平台强度做<b>确定性正则拦截</b>——弱/零平台命中
         <code>http(s) 链接</code>、<code>域名</code>、<code>微信号</code>、<code>手机号</code>、<code>二维码话术</code> 即整条 job 判失败，绝不流进草稿箱；强平台拦「裸链堆砌」（&gt;3 条）与联系方式。</div>
       <section>

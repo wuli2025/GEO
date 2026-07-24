@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-// 自动更新（GitHub Releases 托管）—— 前端 = 后端状态机的「视图」
+// 自动更新（自建 R2 CDN 主源 + gh-proxy/GitHub 回退）—— 前端 = 后端状态机的「视图」
 //
 // 旧版是「纯前端、一堆离散 ref 各自维护」；现在更新逻辑收进 Rust 的唯一状态机
 // （src-tauri/src/updater.rs，借鉴 OpenCode 桌面端 updater-controller）：

@@ -1,13 +1,17 @@
 <script setup lang="ts">
-/** 自动规划：定时任务表接真（mediaops 发文排期，默认每平台 3 天/篇，大脑可经 apihub 调参）；其余子页为设计稿静态。 */
-import { ref, computed, onMounted, watch } from "vue";
+/**
+ * 自动规划（一页到底，原子标签已撤）：定时任务表接真（mediaops 发文排期，默认每平台
+ * 3 天/篇，大脑可经 apihub 调参）；其下依次是设计稿的 Policy / 分发回路 / 决策回路 /
+ * 风险分级 / 触发式调配示例。
+ */
+import { ref, onMounted } from "vue";
 import { vAutopilotHtml, cronDesignHtml, title } from "./render";
 import { mediaOps, MEDIA_PLATFORMS, type MediaSchedule, type MediaPlatform } from "../../tauri";
 import { toast } from "../../composables/useToast";
 
-const props = defineProps<{ sub: string; platform: string }>();
-const html = computed(() => vAutopilotHtml(props.sub));
-const head = computed(() => title("自动规划", "总控 / 自治调度"));
+defineProps<{ sub?: string; platform: string }>();
+const html = vAutopilotHtml();
+const head = title("自动规划", "总控 / 自治调度");
 const designHtml = cronDesignHtml();
 
 const schedules = ref<MediaSchedule[]>([]);
@@ -31,8 +35,7 @@ async function load() {
     toast.error(e?.message ?? String(e));
   }
 }
-onMounted(() => { if (props.sub === "cron") load(); });
-watch(() => props.sub, (v) => { if (v === "cron") load(); });
+onMounted(load);
 
 function fmtAgo(ts: number | null): string {
   if (!ts) return "—";
@@ -110,7 +113,7 @@ async function tickNow() {
 </script>
 
 <template>
-  <div v-if="props.sub === 'cron'">
+  <div>
     <div v-html="head"></div>
     <div class="callout y">
       <b>真实排期已接通</b>：到期只向「规划队列」塞一条例行任务（该平台还有未完成任务则本轮跳过，防堆积），
@@ -173,6 +176,6 @@ async function tickNow() {
       </div>
     </section>
     <div v-html="designHtml"></div>
+    <div v-html="html"></div>
   </div>
-  <div v-else v-html="html"></div>
 </template>

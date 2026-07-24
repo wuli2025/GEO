@@ -27,6 +27,8 @@ export const ICONS: Record<string, string> = {
   back: '<path d="M19.5 12h-15"/><path d="M10.5 5.5L4 12l6.5 6.5"/>',
   target:
     '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+  // 运营助手：对话气泡（原先是 💬 emoji —— 唯一一个彩色表情混在单色描线图标里）
+  chat: '<path d="M20 12.5c0 3.6-3.6 6.5-8 6.5-.9 0-1.8-.12-2.6-.35L4.5 20.5l1.2-3.4C4.35 15.9 3.5 14.3 3.5 12.5c0-3.6 3.6-6.5 8-6.5s8.5 2.9 8.5 6.5z"/>',
   // 品牌档案：盾牌 + 勾（权威主体 / 可信信源）
   brand:
     '<path d="M12 3.5l7.5 2.7v5.3c0 4.3-3.1 7.6-7.5 8.9-4.4-1.3-7.5-4.6-7.5-8.9V6.2z"/><path d="M9 12l2.2 2.2L15.3 10"/>',
@@ -262,12 +264,14 @@ export interface Zone {
   keys: [string, string, string, string][]; // [id, icon, text, hotkey]
 }
 export const ZONES: Zone[] = [
+  // 品牌形象与大脑·进化对调了位置：品牌是每篇稿子都要落到的「我是谁」，天天要看，
+  // 提到总控常驻；大脑·进化是周月尺度的复盘，收进专家模式即可。
   { label: "总控", keys: [
     ["dashboard", "board", "数据看板", "G"], ["approvals", "approve", "审批队列", "Q"],
-    ["autopilot", "plan", "自动规划", "A"], ["brain", "brain", "大脑·进化", "B"]] },
+    ["autopilot", "plan", "自动规划", "A"], ["brand", "brand", "品牌形象", "D"]] },
   { label: "资源", keys: [
     ["experts", "experts", "专家阵容", "X"],
-    ["brand", "brand", "品牌档案", "D"], ["promo", "target", "推广植入", "P"],
+    ["brain", "brain", "大脑·进化", "B"], ["promo", "target", "推广植入", "P"],
     ["accounts", "matrix", "账号矩阵", "M"],
     ["kb", "kb", "知识库", "K"], ["questions", "ask", "题库", "T"]] },
   { label: "系统", keys: [
@@ -275,23 +279,16 @@ export const ZONES: Zone[] = [
     ["layout", "type", "排版中心", "L"], ["settings", "api", "设置", "I"]] },
 ];
 
+/**
+ * 第三排子标签（bar3）。
+ *
+ * 除「设置」与「知识库」外，其余视图一律**不设子标签**——原来的分页内容
+ * 已在各自视图里从上到下合并成一页（门户只留「工作流 + 专家团补丁」）。
+ * 这里留空即等于 bar3 自动隐藏（GeoOpsCenter 里 `v-if="subtabs.length"`）。
+ */
 export const SUBTABS: Record<string, [string, string][]> = {
-  dashboard: [["kpi", "KPI 卡带"], ["traffic", "流量与 AI 来源"], ["cite", "五引擎提及率"], ["matrix", "平台×指标"], ["radar", "AI 爬虫雷达"], ["health", "日健康度"], ["attr", "归因口径说明"]],
-  // cron 置顶为默认页；其余经 SUBTAB_PRIMARY 折叠进「更多」（GeoOpsCenter）
-  autopilot: [["cron", "定时任务表"], ["policy", "AutopilotPolicy"], ["multi", "多账号分发"], ["loop", "决策回路"], ["risk", "三级风险分级"], ["cases", "触发式调配示例"]],
-  accounts: [["roster", "账号总表"], ["dispatch", "分布式发送"], ["risk2", "风控红线"]],
-  brain: [["timeline", "进化时间线"], ["cards", "insight 卡库"], ["tree", "prompt 版本树"], ["flywheel", "飞轮健康度"], ["dual", "双环共轴"]],
-  experts: [["roster", "阵容总表"], ["format", "专家文件格式"], ["perf", "绩效与编成进化"]],
-  // brand（品牌档案）刻意不设子页：上传资料 + 手填字段一页到底，bar3 自动隐藏
-  // 档案已独立成「品牌档案」页（填什么）；这里只留「怎么用」三页
-  promo: [["logic", "植入逻辑"], ["matrix", "强度矩阵"], ["guard", "硬广守卫"]],
   kb: [["files", "资料文件"], ["graph", "星图"]],
-  questions: [["bank", "题库与选题池"], ["lists", "三张清单"], ["probe", "周探测机制"]],
-  engine: [["keep", "CDP 保窗机制"], ["chain", "投递全链路"], ["ledger", "七平台卡点总账"], ["proto", "输出协议"], ["matrix2", "平台×方案选型"]],
-  gate: [["scorer", "GEO 九信号评分器"], ["err", "error 11 条"], ["warn", "warning 9 条"], ["anti", "防应付设计"]],
-  layout: [["cover", "平台封面规格"], ["theme", "版式与主题参数"], ["how", "人机分工（人调模板参数）"]],
   settings: [["chan", "模型通道"], ["tier", "模型分层"], ["img", "生图通道"], ["update", "我们的更新"], ["env", "环境医生"]],
-  portal: [["board", "工作流"], ["qbank", "选题·题库"], ["plan", "规划队列"], ["acct", "账号·发送方式"], ["team", "专家团补丁"], ["blockers", "卡点档案"], ["style", "文风宪法"]],
 };
 
 /** hotkey → viewId */

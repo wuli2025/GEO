@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { vBrainHtml } from "./render";
+import { vBrainHtml, title } from "./render";
 import { useEvolution } from "../../composables/useEvolution";
-const props = defineProps<{ sub: string; platform: string }>();
+defineProps<{ sub?: string; platform: string }>();
 // 大脑·进化数据抽在可替换 composable 里；已接真实后端（evolution.rs），空账本回落示例。
 const { data, source, liveTimeline, liveVersions, refresh, addCard, addEntry, decideEntry, rollbackPrompt } = useEvolution();
-const html = computed(() => vBrainHtml(props.sub, data.value));
+const head = title("大脑 · 进化", "总控 / 循环工程");
+// 子标签已撤：时间线 / 卡库 / 版本树 / 飞轮 / 双环一页到底。
+const html = computed(() => vBrainHtml(data.value));
 
 // ── 手写一张卡 ──
 const showCardForm = ref(false);
@@ -61,6 +63,7 @@ async function rollback(id: string) {
 </script>
 <template>
   <div>
+    <div v-html="head"></div>
     <div class="card" style="margin-bottom:12px">
       <h3>
         进化账本
@@ -98,7 +101,7 @@ async function rollback(id: string) {
           <button class="btn sm danger" :disabled="busy" @click="decide(e.id, '已回滚')">回滚</button>
         </div>
       </div>
-      <div v-if="source === 'live' && rollables.length && props.sub === 'tree'" style="margin-top:10px">
+      <div v-if="source === 'live' && rollables.length" style="margin-top:10px">
         <h3 style="margin-bottom:6px">历史版本一键回滚</h3>
         <div v-for="v in rollables" :key="v.id" style="display:flex;gap:8px;align-items:center;margin:4px 0;font-size:14px">
           <span style="flex:1;color:var(--ink2)">{{ v.expertId }}（{{ v.platform || "基础" }}·{{ v.anchor }}）v{{ v.version }} · {{ v.status === "rolled_back" ? "已回滚" : "已归档" }}</span>

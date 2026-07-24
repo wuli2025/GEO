@@ -7,7 +7,9 @@
   --ink: #1c2233; --ink2: #3a4258; --dim: #5d6785; --muted: #8a92ad;
   --accent: #4263eb; --accent-soft: rgba(66, 99, 235, .08); --accent-ink: #3b5bdb;
   --focus: #4c6ef5;
-  --code-bg: #f6f8fc; --code-ink: #1f4e8c; --head-ink: #3f4a6e;
+  /* 行内 code 曾是蓝底蓝字 —— 表格里整整一列 id 变成一片蓝，跟「当前位置」抢同一个
+     颜色语义。改中性：code 只承担「这是字面量」，颜色留给状态和选中态。 */
+  --code-bg: #f2f4f9; --code-ink: #3a4258; --head-ink: #3f4a6e;
   --tag-ok-bg: #e2f4e4; --tag-ok-ink: #1b7a2c;
   --tag-warn-bg: #fdf1d7; --tag-warn-ink: #8f5f08;
   --tag-info-bg: #e2ebfb; --tag-info-ink: #2454b5;
@@ -18,16 +20,26 @@
   --grid: #e7e9f2; --axis: #d4d8e6; --chart-ink: #8a8f9f;
   --space-3xs: 2px; --space-2xs: 4px; --space-xs: 8px; --space-s: 12px;
   --space-m: 16px; --space-l: 20px; --space-xl: 24px; --space-2xl: 32px;
-  --text-2xs: 12px; --text-xs: 13.5px; --text-s: 15px; --text-m: 16px;
-  --text-l: 18px; --text-xl: 26px; --text-figure: 38px;
-  --r: 12px; --radius-card: 12px; --radius-ctl: 8px; --radius-pill: 999px;
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --dur-fast: 120ms; --dur-base: 180ms;
+  /* 整梯子往上抬了一档：这套界面是给人长时间盯着读的，最小那一档原来只有 12px，
+     一堆状态、元信息全挤在那一档上，看久了费眼。字号大了页面自然装得少 —— 那正好
+     逼着每块地方只留真正要说的那句话。 */
+  --text-2xs: 12.5px; --text-xs: 14px; --text-s: 15.5px; --text-m: 17px;
+  --text-l: 19px; --text-xl: 26px; --text-figure: 38px;
+  --r: 10px; --radius-card: 10px; --radius-ctl: 6px; --radius-pill: 999px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --dur-fast: 120ms; --dur-base: 180ms; --dur-slow: 260ms;
   --stroke: 1.6;
   --accent-hover: rgba(66, 99, 235, .14); --accent-press: rgba(66, 99, 235, .22);
   --danger-soft: rgba(208, 59, 59, .07); --danger-soft-hover: rgba(208, 59, 59, .13);
   --track: rgba(28, 40, 80, .06); --wash: rgba(28, 40, 80, .025);
-  --bar2-bg: #fbfcfe; --bar3-bg: #f4f6fa;
   --tip-shadow: rgba(30, 40, 80, .18); --hairline: rgba(28, 40, 80, .12);
+  /* 表格行分隔用的发丝线：比 --line 更淡，密集行不至于织成网格 */
+  --rule: #edeff5;
+  /* 分层柔和阴影（带蓝调，贴合冷蓝灰色板）——只给「该浮起来」的悬浮层用：
+     菜单/抽屉/tooltip。卡片仍是发丝边框、不上阴影（沿用反 slop 定式）。
+     此前菜单用的是 rgba(0,0,0,.28) 纯黑硬阴影，压白底发灰发脏，这里统一收敛。 */
+  --shadow-1: 0 1px 2px rgba(28, 40, 80, .05), 0 2px 6px rgba(28, 40, 80, .05);
+  --shadow-2: 0 2px 8px rgba(28, 40, 80, .07), 0 12px 28px rgba(28, 40, 80, .10);
+  --shadow-3: 0 6px 20px rgba(28, 40, 80, .10), 0 28px 64px rgba(28, 40, 80, .16);
 
   height: 100%;
   display: flex;
@@ -61,59 +73,64 @@
 .geo-ops .sdot.idle { background: var(--muted); }
 .geo-ops .sline { display: inline-flex; align-items: center; white-space: nowrap; }
 
-/* ═══ 顶部功能键区 ═══ */
+/* ═══ 顶部功能键区 ═══
+   三排（功能键 / 媒体门户 / 子标签）曾各有各的底色与分隔线 —— 三条横线 + 三块色带
+   压在内容上方近 150px。现在统一成一块白色面板，整个顶栏只在最下沿留一条线；
+   排与排靠间距区分，不靠色带。 */
 .geo-ops .geo-header { background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
-.geo-ops .bar1 { display: flex; align-items: center; padding: var(--space-xs) var(--space-m) 6px; flex-wrap: wrap; row-gap: var(--space-2xs); }
+.geo-ops .bar1 { display: flex; align-items: center; padding: 7px var(--space-m) 5px; flex-wrap: wrap; row-gap: var(--space-2xs); }
 /* 返回 Polaris：控制台整屏后侧栏没了，这是回主应用的唯一入口。放在品牌区左侧、
    做成安静的图标键 —— 它是逃生口，不是第 13 个功能键，不该跟导航抢注意力。 */
 .geo-ops .backkey { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 30px; height: 30px; margin-right: var(--space-xs); border-radius: var(--radius-ctl); border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; font-family: inherit; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
 .geo-ops .backkey:hover { color: var(--ink); background: var(--accent-soft); }
 .geo-ops .backkey:active { background: var(--accent-press); }
-.geo-ops .brand { display: flex; align-items: baseline; gap: var(--space-xs); padding-right: var(--space-m); margin-right: var(--space-2xs); border-right: 1px solid var(--line); flex: none; }
-.geo-ops .brand b { font-size: var(--text-l); letter-spacing: .06em; white-space: nowrap; font-weight: 600; }
+/* 品牌区与板块区之间原本各有一条竖分隔线（共 3 条）。板块之间靠 16px 间距已经分得开，
+   竖线纯属重复表达 —— 全部去掉。 */
+.geo-ops .brand { display: flex; align-items: baseline; gap: var(--space-xs); padding-right: var(--space-s); margin-right: var(--space-2xs); flex: none; }
+.geo-ops .brand b { font-size: var(--text-m); letter-spacing: .04em; white-space: nowrap; font-weight: 600; color: var(--ink2); }
 .geo-ops .brand small { color: var(--muted); font-size: var(--text-2xs); white-space: nowrap; }
-.geo-ops .zone { display: flex; align-items: center; gap: var(--space-3xs); padding: 0 var(--space-s); border-right: 1px solid var(--line); flex: none; }
-.geo-ops .zone:last-of-type { border-right: none; }
+.geo-ops .zone { display: flex; align-items: center; gap: var(--space-3xs); padding: 0 var(--space-xs); flex: none; }
+.geo-ops .zone + .zone { margin-left: var(--space-s); }
 .geo-ops .zone .zlab { font-size: var(--text-xs); color: var(--muted); letter-spacing: .18em; margin-right: var(--space-2xs); white-space: nowrap; }
-.geo-ops .fkey { display: inline-flex; align-items: center; gap: 6px; padding: 6px var(--space-xs); border-radius: var(--radius-ctl); border: 1px solid transparent; color: var(--dim); font-size: var(--text-m); cursor: pointer; white-space: nowrap; user-select: none; background: transparent; font-family: inherit; line-height: 1; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
+.geo-ops .fkey { display: inline-flex; align-items: center; gap: 6px; padding: 6px var(--space-xs); border-radius: var(--radius-ctl); border: 0; color: var(--dim); font-size: var(--text-s); cursor: pointer; white-space: nowrap; user-select: none; background: transparent; font-family: inherit; line-height: 1; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
 .geo-ops .fkey:hover { background: var(--card2); color: var(--ink2); }
-.geo-ops .fkey.active { background: var(--accent-soft); border-color: var(--line-2); color: var(--accent-ink); }
+.geo-ops .fkey.active { background: var(--accent-soft); color: var(--accent-ink); }
 .geo-ops .fkey:active { background: var(--card2); }
 .geo-ops .fkey:disabled { opacity: .55; cursor: not-allowed; }
-.geo-ops .fkey .pip { min-width: 16px; height: 16px; padding: 0 var(--space-2xs); border-radius: var(--radius-pill); background: var(--accent); color: var(--accent-ink); font-size: var(--text-2xs); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+.geo-ops .fkey .pip { min-width: 16px; height: 16px; padding: 0 var(--space-2xs); border-radius: var(--radius-pill); background: var(--accent); color: #fff; font-size: var(--text-2xs); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-variant-numeric: tabular-nums; }
 .geo-ops .barhealth { margin-left: auto; display: flex; align-items: center; gap: var(--space-m); font-size: var(--text-xs); color: var(--dim); padding-left: var(--space-s); font-variant-numeric: tabular-nums; }
 .geo-ops .barhealth .sline { gap: 0; }
 
-/* 第二排：媒体门户切换器 */
-.geo-ops .bar2 { display: flex; align-items: center; gap: 6px; padding: 6px var(--space-m); background: var(--bar2-bg); border-top: 1px solid var(--line); flex-wrap: wrap; row-gap: var(--space-2xs); }
-.geo-ops .bar2 .zlab { font-size: var(--text-xs); color: var(--muted); letter-spacing: .18em; margin-right: var(--space-2xs); flex: none; }
-.geo-ops .pchip { display: inline-flex; align-items: center; padding: 6px var(--space-m); border-radius: var(--radius-pill); border: 1px solid var(--line); color: var(--ink2); font-size: var(--text-m); cursor: pointer; background: transparent; font-family: inherit; white-space: nowrap; line-height: 1.6; transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
-.geo-ops .pchip:hover { border-color: var(--line-2); color: var(--ink2); }
-.geo-ops .pchip.active { background: var(--accent-soft); border-color: var(--line-2); color: var(--accent-ink); }
-.geo-ops .pchip:active { background: var(--card2); }
-.geo-ops .pchip .n { color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+/* 第二排：媒体门户切换器
+   原来是 11 枚描边胶囊，每枚配一个满饱和品牌色徽标 —— 一整条彩虹带横在页面顶部，
+   而且 11 个平台里通常只有 1 个是「当前」。取舍：徽标默认去色、胶囊默认无框，
+   只有 hover/选中才恢复品牌色与底色。颜色因此重新变成「你在这」的信号。 */
+.geo-ops .bar2 { display: flex; align-items: center; gap: var(--space-3xs); padding: 2px var(--space-m) 6px; flex-wrap: wrap; row-gap: var(--space-2xs); }
+.geo-ops .pchip { display: inline-flex; align-items: center; padding: 5px var(--space-s); border-radius: var(--radius-ctl); border: 0; color: var(--dim); font-size: var(--text-s); cursor: pointer; background: transparent; font-family: inherit; white-space: nowrap; line-height: 1.5; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
+.geo-ops .pchip:hover { background: var(--card2); color: var(--ink2); }
+.geo-ops .pchip.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+.geo-ops .pchip .n { color: var(--muted); margin-left: 5px; font-variant-numeric: tabular-nums; }
 .geo-ops .pchip.active .n { color: var(--accent-ink); }
-.geo-ops .pchip.ghost { color: var(--muted); border-style: dashed; }
+.geo-ops .pchip.ghost { color: var(--muted); }
 .geo-ops .pchip .pic { display: inline-flex; margin-right: 6px; }
 .geo-ops .pchip .pic:empty { display: none; }
-.geo-ops .pchip .pi { width: 15px; height: 15px; display: block; border-radius: 4px; opacity: .92; transition: opacity var(--dur-fast) var(--ease-out); }
-.geo-ops .pchip:hover .pi, .geo-ops .pchip.active .pi { opacity: 1; }
-.geo-ops .pchip.ghost .pic { opacity: .45; filter: grayscale(.5); }
+.geo-ops .pchip .pi { width: 14px; height: 14px; display: block; border-radius: 4px; filter: grayscale(1); opacity: .5; transition: filter var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out); }
+.geo-ops .pchip:hover .pi, .geo-ops .pchip.active .pi { filter: none; opacity: 1; }
 
-/* 第三排：子标签 */
-.geo-ops .bar3 { display: flex; align-items: center; gap: var(--space-3xs); padding: 6px var(--space-m); border-top: 1px solid var(--line); flex-wrap: wrap; row-gap: var(--space-2xs); background: var(--bar3-bg); }
-.geo-ops .stab { padding: 6px var(--space-s); border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--dim); font-size: var(--text-s); cursor: pointer; font-family: inherit; white-space: nowrap; line-height: 1.6; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
-.geo-ops .stab:hover { color: var(--ink2); background: var(--card2); }
-.geo-ops .stab.active { background: var(--card2); border-color: var(--line); color: var(--ink); }
-.geo-ops .stab:active { background: var(--panel); }
+/* 第三排：子标签 —— 页内二级导航，最轻的一层：无框、无底，选中只加重墨色 + 下划线 */
+.geo-ops .bar3 { display: flex; align-items: center; gap: var(--space-3xs); padding: 0 var(--space-m) 2px; flex-wrap: wrap; row-gap: var(--space-2xs); }
+.geo-ops .stab { padding: 5px var(--space-xs); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: var(--text-xs); cursor: pointer; font-family: inherit; white-space: nowrap; line-height: 1.6; transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.geo-ops .stab:hover { color: var(--ink2); }
+.geo-ops .stab.active { color: var(--ink); border-bottom-color: var(--accent); }
 
 /* 下拉菜单（bar1 专家模式 / bar3 更多） */
 .geo-ops .menu-wrap { position: relative; display: inline-flex; }
 .geo-ops .caret { font-size: 9px; opacity: .7; margin-left: 3px; transition: transform var(--dur-fast) var(--ease-out); }
 .geo-ops .caret.up { transform: rotate(180deg); }
-.geo-ops .menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 168px; padding: var(--space-3xs); border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--panel); box-shadow: var(--shadow-2, 0 8px 24px rgba(0,0,0,.28)); display: flex; flex-direction: column; gap: 2px; }
+.geo-ops .menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 168px; padding: var(--space-3xs); border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--panel); box-shadow: var(--shadow-2); display: flex; flex-direction: column; gap: 2px; transform-origin: top left; animation: geo-pop var(--dur-base) var(--ease-out); }
+@keyframes geo-pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
 /* 靠右的下拉（如 bar1「专家模式」）：右边缘对齐按钮，向左铺开，不越过右侧的设置/助手 */
-.geo-ops .menu-r { left: auto; right: 0; }
+.geo-ops .menu-r { left: auto; right: 0; transform-origin: top right; }
 .geo-ops .mitem { display: inline-flex; align-items: center; gap: 8px; width: 100%; padding: 7px var(--space-xs); border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--dim); font-size: var(--text-s); font-family: inherit; line-height: 1; cursor: pointer; white-space: nowrap; text-align: left; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
 .geo-ops .mitem:hover { background: var(--card2); color: var(--ink2); }
 .geo-ops .mitem.active { background: var(--accent-soft); border-color: var(--line-2); color: var(--accent-ink); }
@@ -125,9 +142,15 @@
 
 /* 内容区：限宽居中 + 大留白，下方尽情下滑 */
 .geo-ops .geo-main { flex: 1; min-width: 0; overflow-y: auto; padding: var(--space-xl) clamp(16px, 3.5vw, 56px) 120px; scroll-behavior: smooth; }
+/* 内容区滚动条：比全局那条更细、带蓝调，静默时近乎隐形，hover 才显形 —— 长文档
+   下拉时不抢注意力。 */
+.geo-ops .geo-main::-webkit-scrollbar { width: 10px; }
+.geo-ops .geo-main::-webkit-scrollbar-thumb { background: transparent; border: 3px solid transparent; border-radius: 999px; background-clip: content-box; transition: background-color var(--dur-base) var(--ease-out); }
+.geo-ops .geo-main:hover::-webkit-scrollbar-thumb { background: var(--line-2); background-clip: content-box; }
+.geo-ops .geo-main::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: content-box; }
 .geo-ops .geo-main > * { max-width: 1560px; margin-left: auto; margin-right: auto; }
-.geo-ops h2.vtitle { font-size: var(--text-xl); margin-bottom: var(--space-2xs); letter-spacing: .01em; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-.geo-ops h2.vtitle::before { content: ""; width: 5px; height: 1.1em; border-radius: 3px; background: linear-gradient(180deg, var(--accent), #7c9bff); flex: none; }
+/* 页标题：原本挂一根蓝紫渐变竖条。标题已经是最大最重的字，装饰条只是重复强调 —— 去掉。 */
+.geo-ops h2.vtitle { font-size: 22px; margin-bottom: var(--space-3xs); letter-spacing: .01em; font-weight: 650; display: flex; align-items: center; gap: 10px; }
 .geo-ops .vcrumb { color: var(--muted); font-size: var(--text-xs); margin-bottom: var(--space-l); }
 
 .geo-ops .grid { display: grid; gap: var(--space-s); }
@@ -135,9 +158,11 @@
 .geo-ops .g4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .geo-ops .g3 { grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); }
 .geo-ops .g2 { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
-.geo-ops .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-card); padding: var(--space-l) var(--space-xl); box-shadow: 0 1px 2px rgba(30, 40, 80, .04), 0 4px 16px rgba(30, 40, 80, .03); }
-.geo-ops .card h3 { font-size: var(--text-m); color: var(--dim); font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-.geo-ops .card h3 .tip { font-size: var(--text-2xs); color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; cursor: help; }
+/* 卡片：白底已经在 #f5f6fa 页底上自然浮起，边框 + 两层投影是第三、第四次说同一件事。
+   只留一条发丝边框。 */
+.geo-ops .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-card); padding: var(--space-l) var(--space-xl); }
+.geo-ops .card h3 { font-size: var(--text-s); color: var(--dim); font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.geo-ops .card h3 .tip { font-size: var(--text-2xs); color: var(--muted); cursor: help; text-decoration: underline dotted; text-underline-offset: 2px; }
 .geo-ops section { margin-bottom: 28px; }
 .geo-ops section > h3 { font-size: var(--text-m); color: var(--head-ink); margin-bottom: var(--space-s); }
 .geo-ops p { color: var(--ink2); font-size: var(--text-m); }
@@ -145,22 +170,32 @@
 .geo-ops li { margin: 4px 0; }
 .geo-ops .foot { margin-top: 7px; color: var(--muted); font-size: var(--text-xs); }
 
-.geo-ops .card.stat { background: linear-gradient(180deg, #ffffff, #fafbff); }
-.geo-ops .stat .num { font-size: var(--text-figure); font-weight: 700; color: var(--ink); line-height: 1.2; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.geo-ops .stat .num { font-size: 32px; font-weight: 650; color: var(--ink); line-height: 1.2; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
 .geo-ops .stat .num small { font-size: var(--text-s); color: var(--dim); font-weight: 400; margin-left: var(--space-3xs); letter-spacing: 0; }
-.geo-ops .stat .sub { font-size: var(--text-2xs); color: var(--dim); margin-top: var(--space-3xs); }
+/* 无数据的占位数字：保持版式不塌，但不参与视觉竞争 */
+.geo-ops .stat .num.nil { color: var(--line-2); font-weight: 400; }
+.geo-ops .stat .sub { font-size: var(--text-2xs); color: var(--dim); margin-top: var(--space-3xs); min-height: 1.2em; }
+.geo-ops .empty { color: var(--muted); font-size: var(--text-xs); }
 .geo-ops .stat .sub a, .geo-ops .card h3 a { white-space: nowrap; }
 .geo-ops .up { color: var(--ok); }
 .geo-ops .down { color: var(--bad); }
 
-.geo-ops table { width: 100%; border-collapse: collapse; font-size: var(--text-s); margin: 4px 0; }
-.geo-ops th { background: var(--card2); text-align: left; padding: 10px var(--space-m); color: var(--head-ink); border: 1px solid var(--line); white-space: nowrap; font-weight: 600; }
-.geo-ops td { padding: 10px var(--space-m); border: 1px solid var(--line); color: var(--ink2); vertical-align: top; }
-.geo-ops tr:nth-child(even) td { background: var(--wash); }
+/* 表格：原本每格四边描线 + 表头填色 + 斑马纹 —— 三套分隔手段叠在一起，一张 8 列表
+   就是几百根线。改成报表排版的通行做法：竖线全去（列靠对齐区分），只留表头下一条
+   实线和行间发丝线，斑马纹删掉。密度不变，线量降一个数量级。 */
+.geo-ops table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); margin: 4px 0; }
+.geo-ops th { background: transparent; text-align: left; padding: 8px var(--space-s); color: var(--dim); border: 0; border-bottom: 1px solid var(--line-2); white-space: nowrap; font-weight: 600; }
+.geo-ops td { padding: 9px var(--space-s); border: 0; border-bottom: 1px solid var(--rule); color: var(--ink2); vertical-align: top; }
+.geo-ops tbody tr:last-child td { border-bottom: 0; }
+.geo-ops tbody tr:hover td { background: var(--wash); }
 .geo-ops .tbl-wrap { overflow-x: auto; }
+/* 表内动作键退成幽灵态：一列 14 个实心蓝按钮比数据本身还抢眼，hover 时才亮起来 */
+.geo-ops td > .btn:not(.danger) { background: transparent; border-color: var(--line); color: var(--dim); }
+.geo-ops td > .btn:not(.danger):hover { background: var(--accent-soft); border-color: var(--line-2); color: var(--accent-ink); }
 .geo-ops .num-cell { font-variant-numeric: tabular-nums; text-align: right; }
 
-.geo-ops .callout { border-left: 4px solid var(--accent); background: var(--card2); padding: var(--space-s) var(--space-m); border-radius: 0 10px 10px 0; margin: var(--space-s) 0; font-size: var(--text-s); color: var(--ink2); }
+/* 说明块：色条 + 填充底两件事同时做，页面上到处是灰蓝色块。只留一根细色条。 */
+.geo-ops .callout { border-left: 2px solid var(--line-2); background: transparent; padding: var(--space-2xs) 0 var(--space-2xs) var(--space-m); border-radius: 0; margin: var(--space-s) 0; font-size: var(--text-xs); color: var(--dim); }
 .geo-ops .callout.y { border-color: var(--warn); }
 .geo-ops .callout.r { border-color: var(--bad); }
 .geo-ops .callout.g { border-color: var(--ok); }
@@ -208,11 +243,11 @@
 .geo-ops .heat td.cell:hover { outline: 2px solid var(--ink); outline-offset: -2px; }
 
 .geo-ops .lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-s); overflow-x: auto; }
-.geo-ops .lane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: var(--space-s); min-width: 180px; min-height: 140px; }
+.geo-ops .lane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card); padding: var(--space-s); min-width: 180px; min-height: 140px; }
 .geo-ops .lane h5 { font-size: var(--text-s); color: var(--dim); margin-bottom: 8px; display: flex; justify-content: space-between; }
 .geo-ops .lane h5 .cnt { color: var(--muted); }
-.geo-ops .draft { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: var(--space-s); margin-bottom: var(--space-xs); font-size: var(--text-xs); color: var(--ink2); cursor: pointer; box-shadow: 0 1px 2px rgba(30, 40, 80, .05); transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
-.geo-ops .draft:hover { border-color: var(--accent); box-shadow: 0 4px 14px rgba(30, 40, 80, .10); transform: translateY(-1px); }
+.geo-ops .draft { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-ctl); padding: var(--space-s); margin-bottom: var(--space-xs); font-size: var(--text-xs); color: var(--ink2); cursor: pointer; transition: border-color var(--dur-fast) var(--ease-out); }
+.geo-ops .draft:hover { border-color: var(--line-2); background: var(--card2); }
 .geo-ops .draft .tags { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
 .geo-ops .draft .tag { font-size: var(--text-2xs); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--muted); }
 .geo-ops .draft .tag.hot { color: var(--warn); border-color: var(--tag-warn-bg); }
@@ -232,11 +267,13 @@
 .geo-ops .kv b { color: var(--dim); font-weight: 500; white-space: nowrap; }
 
 .geo-ops .flow { display: flex; flex-wrap: wrap; gap: var(--space-xs); align-items: stretch; margin: var(--space-s) 0; }
-.geo-ops .flow .step { background: var(--card2); border: 1px solid var(--accent); border-radius: var(--radius-ctl); padding: var(--space-xs) var(--space-s); font-size: var(--text-xs); color: var(--ink2); max-width: 210px; }
+/* 流程步骤：每一格都描蓝框，等于全部都是重点、也就是全部都不是。默认中性，
+   只有真正带语义的 .ok / .evo 才上色。 */
+.geo-ops .flow .step { background: var(--card2); border: 1px solid var(--line); border-radius: var(--radius-ctl); padding: var(--space-xs) var(--space-s); font-size: var(--text-xs); color: var(--ink2); max-width: 210px; }
 .geo-ops .flow .step.evo { border-color: var(--s3); }
 .geo-ops .flow .step.ok { border-color: var(--ok); }
 .geo-ops .flow .step small { color: var(--dim); display: block; margin-top: 1px; font-size: var(--text-2xs); }
-.geo-ops .flow .arr { color: var(--accent); font-weight: bold; align-self: center; }
+.geo-ops .flow .arr { color: var(--muted); align-self: center; }
 
 .geo-ops .switch { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .geo-ops .switch button { padding: var(--space-2xs) var(--space-s); background: transparent; border: none; color: var(--dim); font-size: var(--text-xs); cursor: pointer; font-family: inherit; }
@@ -275,8 +312,10 @@
 @keyframes geo-spin { to { transform: rotate(360deg); } }
 
 /* 抽屉（专家提示词编辑） */
-.geo-ops .gd-mask { position: fixed; inset: 0; z-index: 60; background: rgba(20, 28, 55, .32); display: flex; justify-content: flex-end; }
-.geo-ops .gd { width: 620px; max-width: 94vw; height: 100%; background: var(--bg); border-left: 1px solid var(--line-2); display: flex; flex-direction: column; box-shadow: -20px 0 60px rgba(30, 40, 80, .25); }
+.geo-ops .gd-mask { position: fixed; inset: 0; z-index: 60; background: rgba(20, 28, 55, .32); display: flex; justify-content: flex-end; animation: geo-fade var(--dur-base) var(--ease-out); }
+.geo-ops .gd { width: 620px; max-width: 94vw; height: 100%; background: var(--bg); border-left: 1px solid var(--line-2); display: flex; flex-direction: column; box-shadow: var(--shadow-3); animation: geo-slide-in var(--dur-slow, 260ms) var(--ease-out); }
+@keyframes geo-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes geo-slide-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 .geo-ops .gd-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--line); font-size: var(--text-m); font-weight: 600; color: var(--ink); }
 .geo-ops .gd-body { overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .geo-ops .gd-doc { margin: 0; padding: 12px; border-radius: 8px; background: var(--code-bg); border: 1px solid var(--line); font-size: var(--text-xs); line-height: 1.7; color: var(--ink2); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
@@ -288,8 +327,8 @@
 /* 响应式（顶栏单行保障，收窄档位） */
 @media (max-width: 1100px) { .geo-ops .lanes { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); } }
 @media (max-width: 760px) {
-  .geo-ops .zone { border-right: none; padding: 0 var(--space-2xs); }
-  .geo-ops .brand { border-right: none; }
+  .geo-ops .zone { padding: 0 var(--space-2xs); }
+  .geo-ops .zone + .zone { margin-left: var(--space-2xs); }
   .geo-ops .lanes { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
   .geo-ops .barhealth { margin-left: 0; padding-left: 0; }
   .geo-ops .geo-main { padding: var(--space-m) var(--space-s) 60px; }
@@ -300,8 +339,9 @@
   .geo-ops .zone { padding: 0 var(--space-xs); }
 }
 @media (max-width: 1420px) {
-  .geo-ops .fkey { font-size: var(--text-s); padding: 6px 6px; gap: 5px; }
+  .geo-ops .fkey { font-size: var(--text-xs); padding: 6px 6px; gap: 5px; }
   .geo-ops .fkey .i { width: 14px; height: 14px; }
+  .geo-ops .pchip { font-size: var(--text-xs); padding: 5px var(--space-xs); }
   .geo-ops .brand { padding-right: var(--space-xs); }
 }
 @media (prefers-reduced-motion: reduce) {
