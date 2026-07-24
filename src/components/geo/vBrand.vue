@@ -13,6 +13,9 @@
  * 一切以文件保管：档案本体 `~/PolarisGEO/data/brand.json`，资料原件在 brand-docs/ 目录，
  * 都可直接用编辑器改、可备份、可随仓库迁移。保存即生效，下一条 generate job 就按新档案织入。
  *
+ * 右边还挂着一块 **AI 输入**（进页自动弹出）：把品牌的事说一遍、或把公司介绍拖进去，
+ * 模型负责拆成字段。它**只提议不落笔**——逐条勾选 → 应用到表单 → 人核对后自己点保存。
+ *
  * 写法上的两条纪律（踩过坑）：
  *   - 数组字段在 UI 上是 textarea 文本（`buf`），**任何写盘前都必须先 `syncLists()` 回灌**，
  *     否则会拿旧数组盖掉用户刚敲的内容；
@@ -22,8 +25,12 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { title } from "./render";
 import { PLATFORMS } from "./data";
-import { brand, type BrandProfile, type BrandTactic, type BrandDoc } from "../../tauri";
+import {
+  brand, chat, listen,
+  type BrandProfile, type BrandTactic, type BrandDoc, type ChatStreamEvent,
+} from "../../tauri";
 import { toast } from "../../composables/useToast";
+import { useFileDrop, type DropPayload } from "../../composables/useFileDrop";
 
 const head = computed(() =>
   title("品牌档案", "资源 / 推广主体的切入点库 —— 上传资料或手填，落点越多，私货夹带得越自然")
@@ -131,7 +138,10 @@ const GROUPS: Group[] = [
   },
 ];
 
-const LIST_KEYS = GROUPS.flatMap((g) => g.fields).filter((f) => f.kind === "list").map((f) => f.key);
+const ALL_FIELDS = GROUPS.flatMap((g) => g.fields);
+const LIST_KEYS = ALL_FIELDS.filter((f) => f.kind === "list").map((f) => f.key);
+/** key → 字段定义。AI 回填时要按字段类型决定往 profile 还是往 buf 里写。 */
+const FIELD = new Map<string, Field>(ALL_FIELDS.map((f) => [f.key as string, f]));
 
 // ── 档案读写 ──
 const profile = ref<BrandProfile | null>(null);
@@ -296,19 +306,81 @@ function looksLikeProfile(o: any): o is BrandProfile {
   );
 }
 const fileInput = ref<HTMLInputElement | null>(null);
-const dragging = ref(false);
+const dropEl = ref<HTMLElement | null>(null);
 const busyDoc = ref("");
 const uploading = ref(false);
 
+/**
+ * 拖进来的东西的统一入口。
+ * 有路径（桌面/Docker）→ 后端读盘，顺带把 PDF/Word 抽成文本；
+ * 只有 File（纯前端预览，没有后端可上传）→ 退回前端读文本那条老路。
+ */
+async function onFiles(p: DropPayload) {
+  if (p.paths.length) await importPaths(p.paths);
+  else if (p.files.length) await ingest(p.files);
+}
+const { over: dropOver } = useFileDrop(dropEl, onFiles, { disabled: uploading });
+
+/** 一份完整的 brand.json 拖进来 = 导入档案，不该混进资料库。 */
+async function adoptProfileDoc(name: string): Promise<boolean> {
+  let parsed: unknown = null;
+  try { parsed = JSON.parse(await brand.docRead(name)); } catch { return false; }
+  if (!looksLikeProfile(parsed)) return false;
+  await brand.docDelete(name).catch(() => {}); // 它不是资料，别留在库里
+  if (!confirm(`「${name}」是一份完整的品牌档案。导入会覆盖当前页面上的全部内容，继续？`)) return true;
+  const p = normalize(parsed);
+  profile.value = p;
+  fillBuf(p);
+  toast.info(`已从「${name}」导入档案——核对无误后点「保存档案」才会落盘`);
+  return true;
+}
+
+/** 收下已落盘的资料：默认启用 + 刷新列表 + 刷预览。 */
+async function afterAdded(names: string[]) {
+  if (!names.length || !profile.value) return;
+  for (const n of names) if (!profile.value.docs.includes(n)) profile.value.docs.push(n);
+  try {
+    await persistDocs();
+    toast.info(`已收下 ${names.length} 份资料，默认启用——写作时模型会从里面找切入点`);
+  } catch (e: any) {
+    toast.error(`资料已存盘，但启用清单没写进档案：${e?.message ?? e}`);
+  }
+  await loadDocs();
+  refreshPreview();
+}
+
+/** 按绝对路径导入（拖拽的主路径）：读盘与格式转换都在后端。 */
+async function importPaths(paths: string[]) {
+  if (!profile.value || uploading.value) return;
+  uploading.value = true;
+  try {
+    const rows = await brand.docImport(paths);
+    for (const r of rows.filter((x) => !x.ok)) {
+      toast.error(`「${r.source}」没进来：${r.error ?? "未知原因"}`);
+    }
+    const added: string[] = [];
+    for (const r of rows.filter((x) => x.ok)) {
+      if (r.name.toLowerCase().endsWith(".json") && (await adoptProfileDoc(r.name))) continue;
+      added.push(r.name);
+    }
+    await afterAdded(added);
+  } catch (e: any) {
+    toast.error(`导入失败：${e?.message ?? e}`);
+  } finally {
+    uploading.value = false;
+  }
+}
+
+/** 前端读文本那条老路：只在没有后端可托付时用（纯前端预览 / 文件选择框）。 */
 async function ingest(files: FileList | File[]) {
   if (!profile.value || uploading.value) return;
   uploading.value = true;
   const list = Array.from(files);
-  let added = 0;
+  const added: string[] = [];
   try {
     for (const f of list) {
       if (!TEXT_EXT.some((e) => f.name.toLowerCase().endsWith(e))) {
-        toast.error(`「${f.name}」不是纯文本——PDF/Word 请先另存为 .md 或 .txt 再传`);
+        toast.error(`「${f.name}」不是纯文本——PDF / Word 直接拖进来即可（选择框只收纯文本）`);
         continue;
       }
       if (f.size > MAX_DOC_BYTES) {
@@ -331,31 +403,17 @@ async function ingest(files: FileList | File[]) {
           }
         }
         await brand.docSave(f.name, text);
-        if (!profile.value.docs.includes(f.name)) profile.value.docs.push(f.name); // 传了就默认启用
-        added++;
+        added.push(f.name); // 传了就默认启用
       } catch (e: any) {
         toast.error(`「${f.name}」上传失败：${e?.message ?? e}`);
       }
     }
-    if (added) {
-      try {
-        await persistDocs();
-        toast.info(`已收下 ${added} 份资料，默认启用——写作时模型会从里面找切入点`);
-      } catch (e: any) {
-        toast.error(`资料已存盘，但启用清单没写进档案：${e?.message ?? e}`);
-      }
-      await loadDocs();
-      refreshPreview();
-    }
+    await afterAdded(added);
   } finally {
     uploading.value = false;
   }
 }
 
-function onDrop(e: DragEvent) {
-  dragging.value = false;
-  if (e.dataTransfer?.files?.length) ingest(e.dataTransfer.files);
-}
 function onPick(e: Event) {
   const t = e.target as HTMLInputElement;
   if (t.files?.length) ingest(t.files);
@@ -459,6 +517,186 @@ async function refreshPreview() {
 }
 watch([previewPid, previewOpen], refreshPreview);
 
+/* ══ AI 输入：说一段话，它把左边这张表填了 ═══════════════════════════
+   这张表二十来个格子，最劝退的是「从哪填起」。所以右边这块板子**每次进页自动弹出**：
+   人只要把品牌的事说一遍，或者把公司介绍拖进去，模型负责拆成字段。
+
+   它**只提议不落笔**：解析出的每一处都摆成一行给人勾（已有内容的默认不勾，
+   免得一次对话把人手填的东西悄悄盖掉），点「应用」才进表单，落盘仍要人点「保存档案」。 */
+const aiOpen = ref(true); // 每次进页都弹——这是主入口，不该藏起来等人去找
+const aiEl = ref<HTMLElement | null>(null);
+const aiDraft = ref("");
+const aiBusy = ref(false);
+const aiRaw = ref("");    // 流式原文（「看它原话」用）
+const aiRawOpen = ref(false);
+const aiNote = ref("");   // 收尾提示 / 失败原因
+interface AiRow { key: string; label: string; kind: Kind; cur: string; next: string; take: boolean }
+const aiRows = ref<AiRow[]>([]);
+let aiReq: string | null = null;
+let unlistenChat: (() => void) | null = null;
+
+// 面板整块都是拖拽区：人在这儿说话，顺手把资料丢进来是最自然的动作
+const { over: aiOver } = useFileDrop(aiEl, onFiles, { disabled: uploading });
+
+/** 字段说明表：与上面那张 GROUPS 同源，改字段不必两头对齐。 */
+function fieldSpec(): string {
+  return ALL_FIELDS.map((f) => {
+    const t = f.kind === "list" ? "字符串数组" : "字符串";
+    const note = f.hint ?? f.ph?.split("\n")[0] ?? "";
+    return `- ${String(f.key)}（${f.label}，${t}）：${note}`;
+  }).join("\n");
+}
+
+/** 已启用资料的节选：喂给模型当提炼材料（限 3 份 × 3000 字，别把提示词撑爆）。 */
+async function docExcerpts(): Promise<string> {
+  const on = docs.value.filter((d) => d.enabled).slice(0, 3);
+  const out: string[] = [];
+  for (const d of on) {
+    try {
+      out.push(`── ${d.name} ──\n${(await brand.docRead(d.name)).slice(0, 3000)}`);
+    } catch { /* 单份读不到就跳过，不能因为它卡住整次生成 */ }
+  }
+  return out.join("\n\n");
+}
+
+function aiPrompt(say: string, docsText: string): string {
+  syncLists();
+  const cur: Record<string, unknown> = {};
+  for (const f of ALL_FIELDS) {
+    const v = (profile.value as any)?.[f.key];
+    if (Array.isArray(v) ? v.length : String(v ?? "").trim()) cur[String(f.key)] = v;
+  }
+  return [
+    "你在帮人填一张「品牌档案」表单。这份档案会在写文章时织进提示词，让模型自然带出品牌，",
+    "所以要的是**可供取用的落点**（痛点、场景、术语、可核验的事实），不是广告词。",
+    "",
+    "【表单字段】",
+    fieldSpec(),
+    "",
+    "【当前已填内容（JSON，可能为空）】",
+    JSON.stringify(cur, null, 1),
+    docsText ? `\n【用户提供的品牌资料节选】\n${docsText}` : "",
+    "",
+    "【用户口述】",
+    say || "（这次没说话，只给了上面的资料——就从资料里提炼）",
+    "",
+    "【怎么输出】",
+    "只输出一个 JSON 对象，用 ```json 代码块包起来，前后不要任何解释，也别调用工具。",
+    "- 键只能是上面列出的字段名；数组字段给字符串数组，其余给字符串；",
+    "- 只放**有依据**的字段：材料里没有的一律不出现，绝不编造数据、案例、背书；",
+    "- 已填内容若与这次说的不冲突就别重复输出；冲突时以用户这次说的为准；",
+    "- faq 每条写成 `问||答`；bannedWords 只放不许出现的词；",
+    "- 中文，克制、具体，别写「行业领先」这类形容词。",
+  ].filter(Boolean).join("\n");
+}
+
+/** 从回复里抠出那个 JSON：优先最后一个代码块，其次首尾大括号之间。 */
+function extractJson(s: string): Record<string, unknown> | null {
+  const fence = [...s.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].pop()?.[1];
+  const i = s.indexOf("{");
+  const j = s.lastIndexOf("}");
+  const cands = [fence, i >= 0 && j > i ? s.slice(i, j + 1) : null];
+  for (const c of cands) {
+    if (!c) continue;
+    try {
+      const o = JSON.parse(c.trim());
+      if (o && typeof o === "object" && !Array.isArray(o)) return o as Record<string, unknown>;
+    } catch { /* 换下一个候选 */ }
+  }
+  return null;
+}
+
+function harvest() {
+  const o = extractJson(aiRaw.value);
+  if (!o) {
+    aiNote.value = "没能从回复里读出可填的字段——把话说得再具体些，或点「看它原话」。";
+    return;
+  }
+  const rows: AiRow[] = [];
+  for (const [k, raw] of Object.entries(o)) {
+    const f = FIELD.get(k);
+    if (!f) continue; // 模型自造的字段一律不认
+    const next =
+      f.kind === "list"
+        ? (Array.isArray(raw) ? raw : String(raw ?? "").split("\n"))
+            .map((x) => String(x).trim()).filter(Boolean).join("\n")
+        : String(raw ?? "").trim();
+    if (!next) continue;
+    const cur = f.kind === "list"
+      ? (buf.value[k] || "").trim()
+      : String((profile.value as any)?.[k] ?? "").trim();
+    if (cur === next) continue;
+    rows.push({ key: k, label: f.label, kind: f.kind, cur, next, take: !cur });
+  }
+  aiRows.value = rows;
+  aiNote.value = rows.length ? "" : "它没提出新的改动——已填的看来够了。";
+  if (rows.length) aiDraft.value = "";
+}
+
+async function aiSend() {
+  if (aiBusy.value || !profile.value) return;
+  const say = aiDraft.value.trim();
+  aiBusy.value = true;
+  aiRaw.value = ""; aiNote.value = ""; aiRows.value = [];
+  try {
+    const docsText = await docExcerpts();
+    if (!say && !docsText) {
+      aiNote.value = "先说一句，或把品牌资料拖进来。";
+      aiBusy.value = false;
+      return;
+    }
+    // 不传 conversationId：这是一次性抽取，不落库、不去搅助手的对话历史
+    aiReq = await chat.send({
+      prompt: aiPrompt(say, docsText),
+      permissionMode: "auto_current",
+      workMode: "office",
+    });
+  } catch (e: any) {
+    aiBusy.value = false;
+    aiNote.value = `没发出去：${e?.message ?? e}`;
+  }
+}
+
+async function aiStop() {
+  if (aiReq) { await chat.cancel(aiReq).catch(() => {}); aiReq = null; }
+  aiBusy.value = false;
+}
+
+function aiApply() {
+  const rows = aiRows.value.filter((r) => r.take);
+  if (!rows.length || !profile.value) return;
+  for (const r of rows) {
+    if (r.kind === "list") buf.value[r.key] = r.next;
+    else (profile.value as any)[r.key] = r.next;
+  }
+  syncLists();
+  aiRows.value = [];
+  aiNote.value = "";
+  toast.info(`已把 ${rows.length} 处填进表单——核对无误再点「保存档案」才落盘`);
+}
+
+const aiTakeCount = computed(() => aiRows.value.filter((r) => r.take).length);
+function aiSelectAll(v: boolean) {
+  for (const r of aiRows.value) r.take = v;
+}
+
+onMounted(async () => {
+  try {
+    unlistenChat = await listen<ChatStreamEvent>("chat:stream", (ev) => {
+      if (!aiReq || ev.reqId !== aiReq) return;
+      if (ev.kind === "delta" && ev.text) aiRaw.value += ev.text;
+      else if (ev.kind === "error") { aiNote.value = ev.text || "生成出错"; aiReq = null; aiBusy.value = false; }
+      else if (ev.kind === "done") { aiReq = null; aiBusy.value = false; harvest(); }
+    });
+  } catch {
+    aiNote.value = "连不上对话流——请在桌面应用内使用这块面板。";
+  }
+});
+onBeforeUnmount(() => {
+  if (aiReq) chat.cancel(aiReq).catch(() => {});
+  unlistenChat?.();
+});
+
 // 未保存就关窗 → 浏览器/WebView 层拦一下
 function onBeforeUnload(e: BeforeUnloadEvent) {
   if (!dirty.value) return;
@@ -478,7 +716,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div>
+  <div class="bd-page">
+   <div class="bd-col">
     <div v-html="head"></div>
 
     <div v-if="loading" class="callout">正在读取档案…</div>
@@ -520,13 +759,14 @@ onBeforeUnmount(() => {
           </p>
           <!-- 用 button 而不是 div：键盘可聚焦、可回车触发，读屏也报得出来 -->
           <button
-            type="button" class="drop" :class="{ on: dragging }" :disabled="uploading"
-            @dragover.prevent="dragging = true" @dragleave="dragging = false" @drop.prevent="onDrop"
+            ref="dropEl"
+            type="button" class="drop" :class="{ on: dropOver }" :disabled="uploading"
             @click="fileInput?.click()"
           >
-            <b>{{ uploading ? "读取中…" : "把文件拖到这里，或点击选择" }}</b>
+            <b>{{ uploading ? "读取中…" : dropOver ? "松手即收下" : "把文件拖到这里，或点击选择" }}</b>
             <span class="foot" style="display:block;margin-top:6px">
-              支持 .md / .txt / .json / .csv / .yml / .html —— PDF、Word 请先另存为纯文本。
+              拖进来的 PDF / Word / Excel / PPT 会自动抽成文本；点击选择只收
+              .md / .txt / .json / .csv / .yml / .html。
               直接拖入一份 <code>brand.json</code> 则视为<b>导入档案</b>，会填满下面的表单。
             </span>
           </button>
@@ -637,6 +877,74 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </template>
+   </div>
+
+    <!-- ── AI 输入：进页自动弹出的那块板 ─────────────────────────────
+         整块都是拖拽区：说话与丢资料是同一个动作的两半。 -->
+    <aside v-if="aiOpen" ref="aiEl" class="bd-ai" :class="{ on: aiOver }">
+      <div class="bd-ai-h">
+        <b>✦ AI 帮你填</b>
+        <span class="grow"></span>
+        <button class="bd-ai-x" title="收起（这页每次打开都会自动弹出）" @click="aiOpen = false">›</button>
+      </div>
+
+      <div class="bd-ai-body">
+        <p class="foot flush">
+          把品牌的事说一遍就行——做什么的、给谁用、解决什么痛点、跟同类差在哪、有什么能被核验的事实。
+          也可以直接把公司介绍 / 产品文档 / FAQ <b>拖进这块面板</b>（PDF、Word 都收）。
+          它读完会<b>逐条提议怎么填</b>，勾选后才进表单，落盘仍要你点「保存档案」。
+        </p>
+
+        <textarea
+          v-model="aiDraft" class="inp" rows="6" :disabled="aiBusy"
+          placeholder="例如：我们叫 llmwiki，做的是自媒体一稿多发 + 发布前 GEO 质检，给一个人运营七八个账号的作者用。最烦的是同一篇稿子重复排版、发出去才发现踩红线。跟别家比我们把质检做在发之前，但重排版还得手动调。"
+        ></textarea>
+
+        <div class="bd-bar">
+          <button v-if="aiBusy" class="btn sm danger" @click="aiStop">停止</button>
+          <button v-else class="btn sm" :disabled="!profile" @click="aiSend">让它帮我填</button>
+          <span v-if="docs.some((d) => d.enabled)" class="foot flush">
+            已启用的 {{ docs.filter((d) => d.enabled).length }} 份资料会一并喂给它
+          </span>
+        </div>
+
+        <p v-if="aiBusy" class="foot">正在读你说的话，并对着字段表拆解…（这一轮不落进对话历史）</p>
+        <p v-if="aiNote" class="foot">{{ aiNote }}</p>
+
+        <!-- 提议清单：一处一行，勾了才算 -->
+        <template v-if="aiRows.length">
+          <div class="bd-bar" style="margin-top:10px">
+            <b>它建议这样填（已勾 {{ aiTakeCount }}/{{ aiRows.length }}）</b>
+            <span class="grow"></span>
+            <button class="btn sm ghost" @click="aiSelectAll(true)">全选</button>
+            <button class="btn sm ghost" @click="aiSelectAll(false)">全不选</button>
+          </div>
+          <div v-for="r in aiRows" :key="r.key" class="bd-prop" :class="{ over: !!r.cur }">
+            <label class="bd-prop-h">
+              <input type="checkbox" v-model="r.take" />
+              <b>{{ r.label }}</b>
+              <span v-if="r.cur" class="badge b-partial">会覆盖已填内容</span>
+            </label>
+            <p v-if="r.cur" class="bd-prop-old">原：{{ r.cur }}</p>
+            <p class="bd-prop-new">{{ r.next }}</p>
+          </div>
+          <button class="btn sm" :disabled="!aiTakeCount" @click="aiApply">
+            应用勾选的 {{ aiTakeCount }} 处到表单
+          </button>
+        </template>
+
+        <div v-if="aiRaw" class="bd-bar" style="margin-top:10px">
+          <button class="btn sm ghost" :aria-expanded="aiRawOpen" @click="aiRawOpen = !aiRawOpen">
+            {{ aiRawOpen ? "收起原话 ▴" : "看它原话 ▾" }}
+          </button>
+        </div>
+        <pre v-if="aiRawOpen" class="pre-box sm">{{ aiRaw }}</pre>
+      </div>
+
+      <div v-if="aiOver" class="bd-ai-drop">松手，把资料交给它</div>
+    </aside>
+
+    <button v-else class="bd-ai-tab" title="展开 AI 输入" @click="aiOpen = true">✦&nbsp;AI&nbsp;帮你填</button>
   </div>
 </template>
 

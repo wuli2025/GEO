@@ -32,9 +32,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// 客户端只拿短期凭据。
 const DEFAULT_API_KEY: Option<&str> = option_env!("POLARIS_GIFT_ARK_KEY");
 const DEFAULT_BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
-/// 生图模型：doubao-seedream 4.5（2026-07 实测该账号区域内存在且在线的最新稳定版本 id）。
-/// 方舟 OpenAI 兼容接口按**完整版本 id** 校验（短别名 `doubao-seedream-4-5` 会 NotFound），故写全。
-const DEFAULT_IMAGE_MODEL: &str = "doubao-seedream-4-5-251128";
+/// 生图模型：doubao-seedream 5.0（2026-07-25 拿真 key 打 GET /models 核对过的在线 id）。
+/// 方舟 OpenAI 兼容接口按**完整版本 id** 校验，且 id 里只有连字符没有点：
+/// `doubao-seedream-5.0-lite` 这种写法一律 404（`InvalidEndpointOrModel.NotFound`）。
+/// 该区域 5.0 只有两档：`doubao-seedream-5-0-260128`（标准）与 `doubao-seedream-5-0-pro-260628`（Pro），
+/// 无 lite 档 —— 这里取标准档（相对 Pro 即「轻」的那一档）。
+const DEFAULT_IMAGE_MODEL: &str = "doubao-seedream-5-0-260128";
 /// 聊天模型：doubao-seed 2.1 turbo（seed 系「快档」的当代继任，旧 `seed-1-6-flash` 已退役）。
 const DEFAULT_CHAT_MODEL: &str = "doubao-seed-2-1-turbo-260628";
 

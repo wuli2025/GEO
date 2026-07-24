@@ -92,7 +92,7 @@ python ~/PolarisGEO/skills/media-publisher/scripts/ark_image.py \
   --out "D:\path\cover.png" --size 1024x1024   # size 缺省 2048x2048
 ```
 
-- 模型缺省 doubao-seedream-4-5；若接口报「模型不存在/未开通」，脚本自动 GET /models
+- 模型缺省 doubao-seedream-5-0-260128（5.0 标准档，id 里只有连字符没有点）；若接口报「模型不存在/未开通」，脚本自动 GET /models
   捞 seedream 系列挨个重试，并提示把可用型号固化进 ark.json。
 - 默认 key 是粉丝福利，对应账号**须在方舟控制台开通生图模型服务**才能出图；报
   `ModelNotOpen` 时提示用户去 https://console.volcengine.com/ark 开通，或在设置里换自己的 key。
@@ -103,11 +103,27 @@ python ~/PolarisGEO/skills/media-publisher/scripts/ark_image.py \
 喂给「数据复盘官」（content-analytics-report）。看的是自己的账号、自己的数据——正当自用。
 
 **机动化的核心**：后台数据全是 JS 渲染，DOM 选择器一改版就废。所以本爬虫**以拦截平台后台
-自己的 XHR/JSON 接口为主**（页面自己会 fetch 一堆 `.../statistic`、`.../data` 的 JSON，
-命中即原样收下），比死磕 DOM 稳，也天然灵活：
+自己的 XHR/JSON 接口为主**（页面自己会 fetch 一堆 JSON，收下来解析），比死磕 DOM 稳，
+也天然灵活：
 - 加平台 = 往脚本 `CRAWL_TARGETS` 加一条（登录 profile / CDP 端口都已就位）。
-- 加数据页 = 往该平台 `views` 加一条 `{url, capture 关键片段}`。
-- 连配置都没有的页 = `--url X --capture pat1,pat2` **万能口**，对任意页抓任意接口。
+- 加数据页 = 往该平台 `views` 加一条 `{url}`。
+- 连配置都没有的页 = `--url X` **万能口**，对任意页抓接口。
+
+**捕获策略（2026-07 大修）**：老版靠一张手写 URL 片段白名单筛响应，且只认
+`content-type: json`。两条都不成立——头条真正带数字的是 `/mp/agw/creator_center/list/v2`、
+`/mp/fe_api/home/merge_v2`（白名单一条不命中），且发的是 `text/plain` 装 JSON（被类型闸门
+丢掉）。实测结果是 `api_count=0`，跑通了但一个数都没有。现改为**默认全捕获 + 排除法**：
+同源非静态一律收下、按内容判断是不是 JSON、再用噪音名单剔埋点与监控。`capture` 退化为
+「额外强制包含」的提示，配错不再致命。
+
+**噪音过滤（同样重要）**：后台页面到处是「不是你的数据」的数字——热榜里别人的爆文、创作
+学院课程播放量、活动参与人数、未读消息计数。实测百家号首页 `activity/ranking/articlelist`
+一条就带进 2200 万阅读。脚本按 URL 与键路径双层 denylist 剔除，**新增平台务必先看一眼
+`summary` 是否量级离谱**——数字比空表更容易骗人。
+
+**规范化输出**：快照里的 `summary` 是给看板读的稳定契约，字段
+`fans / reads / impressions / likes / comments / shares / income`（缺 = 没抓到）。
+`ok:false` 表示「跑通但零指标」，与「真的是 0」必须区分。
 
 **复用现成基建**：detached Chrome + CDP 接管**你已登录的那个窗口**（与投递脚本同端口，免重复
 扫码，收尾只断连不关窗）；每平台持久 profile；落盘走 `data_store.save_record("metrics", …)`
@@ -125,14 +141,24 @@ python ~/PolarisGEO/skills/media-publisher/scripts/metrics_crawler.py --platform
 python ~/PolarisGEO/skills/media-publisher/scripts/metrics_crawler.py --platform toutiao,baijia,douyin
 python ~/PolarisGEO/skills/media-publisher/scripts/metrics_crawler.py --all            # 抓所有已配置平台
 python ~/PolarisGEO/skills/media-publisher/scripts/metrics_crawler.py --platform douyin --views overview
-# 万能口：任意页抓任意接口（未配置平台/临时探查）
+# 万能口：任意页抓接口（未配置平台/临时探查；--capture 可选）
 python ~/PolarisGEO/skills/media-publisher/scripts/metrics_crawler.py --platform zhihu \
-  --url "https://www.zhihu.com/creator" --capture "/analytics,/statistics,/member"
+  --url "https://www.zhihu.com/creator"
 ```
 
-输出协议：每步一行 JSON；每平台一行 `{"result":"crawled"|"need_login"|"failed","platform":..,"api_count":..,"snapshot":..}`；
-末行 `{"result":"done","platforms":N,"ok":N,"records":N}`。抓完提醒用户「后台接口偶尔改版，某平台
-`api_count=0` 时用 `--url/--capture` 万能口对准该数据页重抓，或把新接口片段补进 `CRAWL_TARGETS`」。
+输出协议：每步一行 JSON；每平台一行
+`{"result":"crawled"|"empty"|"need_login"|"failed","platform":..,"api_count":..,"summary":{..},"snapshot":..}`；
+末行 `{"result":"done","platforms":N,"ok":N,"records":N}`。`empty` = 跑通但零指标（登录过期，
+或该平台配置尚未对过真流量）——此时用 `--url` 万能口对准该数据页重抓，看 `metrics_digest`
+里出现了什么键，再决定要不要往 `_CANON` 补同义词。
+
+**应用内入口**：看板「平台 × 指标热力表」下方的「立即抓取」按钮 → Tauri 命令
+`mediaops_crawl_run`；看板加载时只读快照（`mediaops_crawl_snapshots`），**不自动抓**——
+自动抓会在用户没点任何东西时弹出 Chrome 窗口。
+
+**验证状态**：头条、百家号已对过真流量（真号真登录，见到真数字）。抖音 / 知乎 / B站 /
+小红书 / 公众号的 `views` 配置仍是按经验写的，未逐个验证；默认全捕获策略让它们大概率
+能出数，但 `summary` 的量级请先人工看一眼再信。
 
 ## 数据落盘与备份 data_store.py / collect_backup.py
 

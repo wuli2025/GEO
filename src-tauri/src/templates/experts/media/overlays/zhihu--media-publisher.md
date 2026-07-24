@@ -1,1 +1,0 @@
-**知乎 · 投递**：profile `browser-profiles/zhihu`，开 zhuanlan.zhihu.com/write：标题 `.WriteIndex-titleInput textarea`，正文粘 `.DraftEditor-root`，URL 跳 `/p/{id}/edit` 即成功。题图：点「添加封面」→ set_input_files `input.UploadPicture-input`，回读 `img[alt='封面图']`；禁 dataURL 充封面。绝不点「发布」；失败降级 manual_assist。

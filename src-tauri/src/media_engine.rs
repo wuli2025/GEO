@@ -77,10 +77,16 @@ pub struct JobStep {
     /// 本步实际落地的技能脚本（upload 阶段是 py 文件绝对路径）。
     #[serde(default)]
     pub skill_script: String,
-    /// 喂给模型的提示词全文快照（仅 generate 有）。留全文而非 hash——
-    /// 原型的价值就在于点开能逐字看到当时到底喂了什么。
+    /// 本步真正下发的那段话：**只留本步专属的部分**（写作任务 / 画面描述 / 校验规约 /
+    /// 执行命令），不再把专家画像 + 平台补丁那两千多字复制进每一格——那份系统设定
+    /// 每格都一样，点「改提示词」随时可看，抄进来只会把真正的差异淹掉。
     #[serde(default)]
     pub prompt: String,
+    /// 上面那段 `prompt` 到底是什么东西的人话小标（「本步任务」/「画面描述」/
+    /// 「校验规约（本地执行）」/「执行命令」）。UI 拿它做题头——本地跑的校验规约
+    /// 和喂给模型的原文不能长一个样。
+    #[serde(default)]
+    pub prompt_label: String,
     /// 快照当时该专家在本平台的 overlay 版本 id（evolution.rs 的 PromptVersion.id）。
     /// 有值即可在详情里一键跳到那一版并回滚。
     #[serde(default)]
@@ -105,6 +111,8 @@ pub struct StepAttr {
     pub skill_id: String,
     pub skill_script: String,
     pub prompt: String,
+    /// 见 [`JobStep::prompt_label`]。
+    pub prompt_label: String,
     pub prompt_version_id: String,
     pub model_hint: String,
 }
@@ -121,6 +129,11 @@ pub struct MediaJob {
     pub title: String,
     #[serde(default)]
     pub topic: String,
+    /// 本篇撰写规划（人在助手里过目并点「开始」的那一份）。非空则 generate 直接按它落笔，
+    /// 不再让主笔自拟一份——否则人审的规划被丢掉、模型另按一份没人看过的规划写，
+    /// 一篇稿白花两次规划的钱。空则退回主笔自拟（老行为）。
+    #[serde(default)]
+    pub plan: String,
     /// 生成阶段下发给 claude CLI 的 `--model`（空=CLI 默认模型）。跑高档模型
     /// （如 claude-opus-4-8）出正式稿时由启动方显式指定，随 job 持久化、续跑不变。
     #[serde(default)]
@@ -152,18 +165,21 @@ pub struct MediaJob {
     pub updated_at: i64,
 }
 
-/// 一条 job 的「总规划提示词」——整篇文章怎么写的那一整段（详情卡中栏的默认内容）。
-/// 与步骤级提示词区分开：那是某一格局部喂了什么，这是整篇的总纲。
+/// 一条 job 的「总规划」——**这篇文章的思路**，不是主笔的提示词。
+///
+/// 内容三段：主笔动笔前自拟的本篇思路（做什么内容 / 给什么感觉 / 用什么写法）、
+/// 这篇稿子要过的专家阵容（哪一格由谁负责、他在本篇干什么）、本篇基本盘。
+/// 主笔那两千多字的画像 + 平台补丁不在这里——它属于「写作」那一格，点进去看。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaJobPlan {
-    /// 提示词全文（空=这条 job 不含 generate 阶段，用的是现成正文）。
+    /// 总规划全文（思路 + 阵容 + 基本盘）。
     pub prompt: String,
     /// 站在「写作」这一格上的专家（改提示词入口就指向他）。
     pub expert_id: String,
     pub expert_name: String,
-    /// true=generate 已跑过，这是当时真正喂进去的原文快照；
-    /// false=还没跑到，按当前专家画像+平台补丁+品牌契约现拼的预览。
+    /// true=主笔已经把本篇思路想出来了（generate:plan 成稿），这段是他的原话；
+    /// false=还没跑到那一步，思路一栏是占位说明，阵容与基本盘照常可看。
     pub recorded: bool,
 }
 
@@ -326,6 +342,7 @@ fn push_step_attr(
             set(&mut s.skill_id, attr.skill_id);
             set(&mut s.skill_script, attr.skill_script);
             set(&mut s.prompt, attr.prompt);
+            set(&mut s.prompt_label, attr.prompt_label);
             set(&mut s.prompt_version_id, attr.prompt_version_id);
             set(&mut s.model_hint, attr.model_hint);
             if s.started_at > 0 && status != "run" {
@@ -344,6 +361,7 @@ fn push_step_attr(
                 skill_id: attr.skill_id,
                 skill_script: attr.skill_script,
                 prompt: attr.prompt,
+                prompt_label: attr.prompt_label,
                 prompt_version_id: attr.prompt_version_id,
                 model_hint: attr.model_hint,
                 duration_ms: 0,
@@ -414,8 +432,8 @@ fn stage_label(stage: &str) -> &'static str {
 
 /// 执行面阶段 → 编排（PlatformSettings.workflow）里的环节名。
 ///
-/// 两套「流程」概念的接缝：编排是 8 步声明式蓝图（选题/调研/写作/…/投递），执行面只跑
-/// 其中 3 步。这个映射就是把执行到的那 3 步认领回蓝图里的对应环节，好取出它配的专家。
+/// 编排与执行面现在是 1:1 的（mediaops::EXECUTED_STEPS 与 ALL_STAGES 同一套四步），
+/// 这个映射只负责把阶段名翻成环节名，好取出它配的专家。
 fn stage_workflow_step(stage: &str) -> &'static str {
     match stage {
         STAGE_GENERATE => "写作",
@@ -509,7 +527,7 @@ fn log_line(log_path: &Path, msg: &str) {
 /// 解析某技能脚本的可执行路径：优先运行期物化 `~/PolarisGEO/skills/{skill}/scripts/{script}`，
 /// 缺失回退仓库源码 `{CARGO_MANIFEST_DIR}/src/templates/skills/{skill}/scripts/{script}`。
 /// 返回 (路径, 来源说明)；两处都没有返回 Err。
-fn resolve_skill_script(skill: &str, script: &str) -> Result<(PathBuf, String), String> {
+pub(crate) fn resolve_skill_script(skill: &str, script: &str) -> Result<(PathBuf, String), String> {
     let materialized = home()
         .join("PolarisGEO")
         .join("skills")
@@ -536,7 +554,7 @@ fn resolve_skill_script(skill: &str, script: &str) -> Result<(PathBuf, String), 
 }
 
 /// 探测一个可用的 python 解释器（防呆：没装 python 时给可读错误）。
-fn resolve_python() -> Result<String, String> {
+pub(crate) fn resolve_python() -> Result<String, String> {
     let candidates: &[&str] = if cfg!(windows) {
         &["python", "python3", "py"]
     } else {
@@ -559,7 +577,7 @@ fn resolve_python() -> Result<String, String> {
 }
 
 #[cfg_attr(not(windows), allow(unused_variables))]
-fn no_window(cmd: &mut Command) {
+pub(crate) fn no_window(cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -704,7 +722,11 @@ fn run_claude_collect(
             "未找到 claude 可执行文件——请在环境医生里安装 Claude Code CLI".to_string()
         })?;
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // 工作目录钉死在 ~/PolarisGEO：claude CLI 会把 cwd 下的 CLAUDE.md 当项目上下文读进去，
+    // 而进程 cwd 随启动方式漂移（开发期是仓库根、装机后是安装目录）——那意味着写作提示词
+    // 之外还挂着一段谁也没在管的上下文。钉死到应用自己的数据目录，注入面才是确定的。
+    let cwd = home().join("PolarisGEO");
+    let _ = std::fs::create_dir_all(&cwd);
     let mut cmd = Command::new(&claude_bin);
     cmd.args([
         "--print",
@@ -881,18 +903,56 @@ fn strip_code_fence(s: &str) -> String {
     t.to_string()
 }
 
+/// claude CLI 会把「模型不可用」等通道故障当普通文本回显（exit 0）的已知话术——
+/// 总规划与正文的内容守卫共用这张表。
+const CLI_ERROR_MARKS: &[&str] = &[
+    "issue with the selected model",
+    "run --model to pick a different model",
+    "may not exist or you may not have access",
+    "api error",
+    "invalid api key",
+    "credit balance is too low",
+    "rate limit",
+    "please run /login",
+];
+
 // ───────────────────────── 阶段执行 ─────────────────────────
 
-/// 拼这条 job 的**总规划提示词**：写作专家基础画像 + 本平台补丁 + insight 卡 + 写作任务
-/// + 品牌植入契约。这一整段就是「整篇文章怎么写」的全部依据，generate 原样喂给模型。
+/// 各平台的正文篇幅区间（字），与平台补丁里写的调性保持一致。
+///
+/// 此前写作任务里硬编码「不少于 1200 字」，而小红书补丁写的是 300~800 字、抖音是
+/// 「极短极快」——同一份提示词里前后打架，且矛盾的两方一个在系统设定段（远）、一个在
+/// 任务段（近），模型多半听后者，于是小红书稿被写成 1200 字长文。篇幅本就是平台属性，
+/// 从这里按平台取，任务段不再自带一个跨平台常量。
+fn word_range(platform: &str) -> (usize, usize) {
+    match platform {
+        "xhs" => (300, 800),
+        "douyin" => (200, 600),
+        "bilibili" => (500, 1200),
+        "zhihu" => (1200, 3000),
+        "wechat" | "toutiao" | "baijia" => (1200, 2500),
+        _ => (800, 2000),
+    }
+}
+
+/// 内容守卫的最小字数：取本平台下限的一半——低于这个必是异常产物（CLI 错误回显、
+/// 半截输出），而不是「写短了」。跟着平台走，抖音的 100 字短文不会被当成故障拦掉。
+fn min_article_chars(platform: &str) -> usize {
+    (word_range(platform).0 / 2).max(100)
+}
+
+/// 拼 generate 要下发的那一整段：写作专家基础画像 + 本平台补丁 + insight 卡（= 系统设定）
+/// ＋ 写作任务 + 品牌植入契约（= 本篇任务）。返回 `(归因, 全文, 本篇任务)`——
+/// **全文喂模型，本篇任务进留痕**：系统设定每条 job、每一格都一样，抄进步骤快照只会把
+/// 「这一篇到底交代了什么」淹在两千多字的通用画像里；要看画像点「改提示词」。
 ///
 /// 专家取自平台编排的「写作」环节（mediaops 设置里可改），不再硬编码 media-writer——
 /// 否则详情页里的「哪个专家」永远是同一个常量，留痕就成了摆设。编排缺「写作」环节时
 /// 回落 media-writer 并在日志里说明，保证老配置照跑。
 ///
 /// 抽成纯拼装函数是为了详情卡：中栏要在 job 还没跑到 generate（甚至还在排队）时就能把
-/// 总纲原文摊开，不能干等步骤留痕。`log` 传 None 即静默——预览路径不该往运行日志里写字。
-fn build_generate_prompt(job: &MediaJob, log: Option<&Path>) -> (StepAttr, String) {
+/// 归因摊开，不能干等步骤留痕。`log` 传 None 即静默——预览路径不该往运行日志里写字。
+fn build_generate_prompt(job: &MediaJob, log: Option<&Path>) -> (StepAttr, String, String) {
     let mut attr = attr_for(&job.platform, "写作");
     if attr.expert_id.is_empty() {
         if let Some(lp) = log {
@@ -931,20 +991,33 @@ fn build_generate_prompt(job: &MediaJob, log: Option<&Path>) -> (StepAttr, Strin
     } else {
         job.topic.trim().to_string()
     };
-    let mut prompt = format!(
-        "{system}{insights}\n\n---\n\n# 写作任务\n\n\
+    // 本篇规划：人在助手里过目的那份优先；没有则留空，由 stage_generate 让主笔自拟后回填。
+    // 位置在硬性要求**之前**——规划是「怎么写」，硬性要求与品牌契约是「不许越的线」，
+    // 线必须压在最后。此前规划被追加在整段 prompt 的最末尾（近因权重最高），
+    // 等于让一份不知道经验库、不知道植入契约的规划去压制它们。
+    let plan_part = if job.plan.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n# 本篇撰写规划（已经人过目，按此落笔）\n\n{}\n", job.plan.trim())
+    };
+    let (wmin, wmax) = word_range(&job.platform);
+    let mut task = format!(
+        "# 写作任务\n\n\
 为「{cn}」写一篇成品正文。选题标题：{title}\n\
-方向/要点：{topic}\n\n\
+方向/要点：{topic}\n\
+{plan_part}\n\
 硬性要求：\n\
 1. 只输出 Markdown 正文，无前后缀说明与代码围栏。\n\
 2. 首行 `# 标题`（可在选题标题上打磨）。\n\
 3. 吸睛引子 + 若干 `## 小标题` 主体段 + 收束结尾。\n\
-4. 不少于 1200 字，信息密度高、有观点有细节，杜绝套话与 AI 腔。\n\
+4. 篇幅 {wmin}~{wmax} 字，信息密度高、有观点有细节。\n\
 5. 严格遵循上文系统设定的平台调性、标题公式与红线。\n",
-        system = system,
         cn = cn,
         title = job.title,
         topic = topic,
+        plan_part = plan_part,
+        wmin = wmin,
+        wmax = wmax,
     );
     // ── 推广植入（方案 A：提示词层注入）：读 brand.json，把「品牌植入契约」织进
     // 写作提示词——在写作时织入而不是写完后再贴，正文与品牌同源才自然、才不触发
@@ -953,17 +1026,112 @@ fn build_generate_prompt(job: &MediaJob, log: Option<&Path>) -> (StepAttr, Strin
         if let Some(lp) = log {
             log_line(lp, &format!("generate：织入品牌植入契约（{strength}）"));
         }
-        prompt.push_str("\n");
-        prompt.push_str(&block);
+        task.push_str("\n");
+        task.push_str(&block);
     }
-    (attr, prompt)
+    let prompt = format!("{system}{insights}\n\n---\n\n{task}");
+    (attr, prompt, task)
 }
 
-/// generate：拿总规划提示词喂 claude → 落 .md。
-fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
-    let (attr, prompt) = build_generate_prompt(job, Some(log_path));
-    let cn = platform_cn(&job.platform);
+/// 一格步骤的系统设定题注：这一步喂模型时前面还压着谁的画像 + 哪个平台的补丁。
+/// 步骤快照只留本篇任务，得有这一句把「省掉的那两千多字在哪」交代清楚。
+fn system_note(expert_name: &str, platform: &str) -> String {
+    format!(
+        "本步任务（系统设定：{expert_name} 画像 + {}补丁，点「改提示词」查看）",
+        platform_cn(platform)
+    )
+}
 
+/// generate：拿到本篇「总规划」（人过目那份优先，没有才让主笔自拟），把规划织进
+/// 写作提示词喂 claude 写正文 → 落 .md。规划失败只降级不断流——没有规划也能写，
+/// 只是少一层构思。
+fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
+    let mut job = job.clone();
+    let (attr, mut prompt, mut task) = build_generate_prompt(&job, Some(log_path));
+    let cn = platform_cn(&job.platform);
+    let note = system_note(&attr.expert_name, &job.platform);
+
+    // 人在助手里已经看过并点了「开始」的那份规划随 job 带进来了 —— 直接按它落笔，
+    // 不再另跑一次规划。省一次模型调用，也让「人审的规划」和「实际落笔依据」是同一份。
+    if !job.plan.trim().is_empty() {
+        log_line(log_path, "generate：采用人已过目的撰写规划，跳过自拟");
+        push_step_attr(
+            &job.id,
+            "generate:plan",
+            "总规划（整篇怎么写）",
+            "ok",
+            job.plan.trim(),
+            StepAttr { prompt: job.plan.trim().to_string(), prompt_label: "人已过目的撰写规划".to_string(), ..attr.clone() },
+        );
+        return finish_generate(&job, &attr, &prompt, &task, &note, log_path);
+    }
+
+    // ── 总规划（整篇怎么写）：不是拼装出来的静态提示词，而是 AI 针对本篇选题自己
+    // 想的规划逻辑——做成什么内容、给读者什么感觉、用什么写法体现。规划回填进 job
+    // 后整段提示词重拼（规划落在硬性要求之前），随 generate 步骤快照留痕。
+    let topic = if job.topic.trim().is_empty() {
+        "（未提供，按标题自行立意）".to_string()
+    } else {
+        job.topic.trim().to_string()
+    };
+    let plan_task = format!(
+        "# 总规划任务\n\n\
+动笔前，先为发到「{cn}」的《{title}》拟本篇总规划。方向/要点：{topic}\n\
+想清三件事：\n\
+1. 内容——核心论点是什么，用哪些事实与细节支撑；\n\
+2. 感觉——读者读完带走什么情绪与判断；\n\
+3. 写法——用什么结构、钩子与节奏体现。\n\
+只输出 300 字以内的规划文本，不写正文，无解释无代码围栏。\n",
+        title = job.title,
+    );
+    let plan_system = crate::expert::expert_media_doc(attr.expert_id.clone(), job.platform.clone());
+    let plan_prompt = format!("{plan_system}\n\n---\n\n{plan_task}");
+    push_step_attr(
+        &job.id,
+        "generate:plan",
+        "总规划（整篇怎么写）",
+        "run",
+        &format!("{} 构思本篇：内容 · 感觉 · 写法…", attr.expert_name),
+        StepAttr { prompt: plan_task.clone(), prompt_label: note.clone(), ..attr.clone() },
+    );
+    match run_claude_collect(&job.id, &plan_prompt, log_path, &job.model) {
+        Ok(raw) => {
+            let plan = strip_code_fence(&raw);
+            let low = plan.to_ascii_lowercase();
+            if CLI_ERROR_MARKS.iter().any(|m| low.contains(*m)) || plan.chars().count() < 20 {
+                log_line(log_path, "generate：总规划产出异常（错误话术/过短），跳过注入，正文照常写");
+                push_step(&job.id, "generate:plan", "总规划（整篇怎么写）", "fail", "规划产出异常，已跳过（正文照常写）");
+            } else {
+                log_line(log_path, &format!("generate：总规划成稿 {} 字", plan.chars().count()));
+                push_step(&job.id, "generate:plan", "总规划（整篇怎么写）", "ok", &plan);
+                // 回填进 job 后整段重拼：规划落在「硬性要求 + 品牌契约」之前，
+                // 不再是追加到末尾把红线压下去。重拼走静默档（日志已经记过一轮）。
+                job.plan = plan;
+                let rebuilt = build_generate_prompt(&job, None);
+                prompt = rebuilt.1;
+                task = rebuilt.2;
+            }
+        }
+        Err(e) => {
+            log_line(log_path, &format!("generate：总规划调用失败（{e}），跳过注入，正文照常写"));
+            push_step(&job.id, "generate:plan", "总规划（整篇怎么写）", "fail", &format!("调用失败：{e}（正文照常写）"));
+        }
+    }
+
+    finish_generate(&job, &attr, &prompt, &task, &note, log_path)
+}
+
+/// generate 的后半程：下发写作提示词 → 内容守卫 → 硬广守卫 → 落盘。
+/// 抽出来是因为规划有两个来源（人过目 / 主笔自拟），前半程分叉、后半程完全一样。
+fn finish_generate(
+    job: &MediaJob,
+    attr: &StepAttr,
+    prompt: &str,
+    task: &str,
+    note: &str,
+    log_path: &Path,
+) -> Result<PathBuf, String> {
+    let cn = platform_cn(&job.platform);
     log_line(
         log_path,
         &format!(
@@ -978,51 +1146,68 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
             }
         ),
     );
-    // 提示词全文随步骤落盘——原型的核心就是点开这一格能逐字看到当时喂了什么。
+    // 本篇任务随步骤落盘——点开这一格能逐字看到「这一篇」交代了什么（含主笔自拟的总规划）；
+    // 前面压着的画像 + 补丁由 prompt_label 交代去处，不再原样复制两千多字进快照。
     push_step_attr(
         &job.id,
         "generate",
         stage_label(STAGE_GENERATE),
         "run",
         &format!("{} 正在为「{cn}」写作…", attr.expert_name),
-        StepAttr { prompt: prompt.clone(), ..attr.clone() },
+        StepAttr { prompt: task.to_string(), prompt_label: note.to_string(), ..attr.clone() },
     );
-    let raw = run_claude_collect(&job.id, &prompt, log_path, &job.model)?;
+    let raw = run_claude_collect(&job.id, prompt, log_path, &job.model)?;
     let body = strip_code_fence(&raw);
     let words = body.chars().count();
     log_line(log_path, &format!("generate：产出正文 {words} 字符"));
-    push_step(&job.id, "generate:guard", "内容守卫（CLI 错误话术 + 最小字数）", "run", &format!("产出 {words} 字符，校验中"));
+    // 守卫不是专家、不喂模型，但也不该是一格空卡：把它照着执行的那份规约原样留下，
+    // 点开就知道这一格凭什么放行、凭什么拦。
+    let min_chars = min_article_chars(&job.platform);
+    let (wmin, _wmax) = word_range(&job.platform);
+    let guard_rules = format!(
+        "# 内容守卫规约（Rust 本地执行，不下发模型）\n\n\
+两道闸，任一命中即判 generate 失败、绝不让残次品流进草稿箱：\n\
+1. **CLI 错误话术**——claude CLI 会把通道故障当普通文本回显（exit 0）。正文里出现下列任一即判故障回显：\n\
+{marks}\n\
+2. **最小字数**——本平台写作要求下限 {wmin} 字，守卫按其一半（{min} 字符）判定：\
+低于此数不是「写短了」，必是异常产物。\n\n\
+本次产出 {words} 字符。\n",
+        marks = CLI_ERROR_MARKS.iter().map(|m| format!("   - `{m}`\n")).collect::<String>(),
+        min = min_chars,
+        wmin = wmin,
+    );
+    push_step_attr(
+        &job.id,
+        "generate:guard",
+        "内容守卫（CLI 错误话术 + 最小字数）",
+        "run",
+        &format!("产出 {words} 字符，校验中"),
+        StepAttr {
+            prompt: guard_rules,
+            prompt_label: "校验规约（本地执行，不喂模型）".to_string(),
+            ..Default::default()
+        },
+    );
 
     // ── 内容守卫（板块H E2E 教训）：claude CLI 会把「模型不可用」等错误当普通文本
     // 输出（exit 0），无守卫时 121 字报错串曾一路排版、投递成真草稿。两道闸：
-    // 1) 错误形态识别——CLI 已知错误话术直接判失败；2) 最小字数——正文要求 1200 字，
-    // 低于 300 字符必是异常产物，宁可失败也不许污染草稿箱。
+    // 1) 错误形态识别——CLI 已知错误话术直接判失败；2) 最小字数——按平台篇幅下限的
+    // 一半判定，宁可失败也不许污染草稿箱。
     let guard_err = |msg: String| -> String {
         log_line(log_path, &format!("generate：内容守卫拦截——{msg}"));
         push_step(&job.id, "generate:guard", "内容守卫（CLI 错误话术 + 最小字数）", "fail", &msg);
         format!("generate 内容守卫拦截：{msg}")
     };
     let low = body.to_ascii_lowercase();
-    const CLI_ERROR_MARKS: &[&str] = &[
-        "issue with the selected model",
-        "run --model to pick a different model",
-        "may not exist or you may not have access",
-        "api error",
-        "invalid api key",
-        "credit balance is too low",
-        "rate limit",
-        "please run /login",
-    ];
     if let Some(mark) = CLI_ERROR_MARKS.iter().find(|m| low.contains(**m)) {
         return Err(guard_err(format!(
             "产出命中 CLI 错误话术「{mark}」，疑为模型/通道故障回显而非正文（前 200 字符：{}）",
             body.chars().take(200).collect::<String>()
         )));
     }
-    const MIN_ARTICLE_CHARS: usize = 300;
-    if words < MIN_ARTICLE_CHARS {
+    if words < min_chars {
         return Err(guard_err(format!(
-            "正文仅 {words} 字符（下限 {MIN_ARTICLE_CHARS}），不足以成稿（前 200 字符：{}）",
+            "正文仅 {words} 字符（下限 {min_chars}），不足以成稿（前 200 字符：{}）",
             body.chars().take(200).collect::<String>()
         )));
     }
@@ -1032,7 +1217,30 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     // ── 硬广守卫（推广植入方案四件套之③）：Rust 确定性正则拦截，不靠模型自觉。
     // 弱/零植入平台正文命中裸链/域名/微信号/手机号/二维码话术即判失败——防封的
     // backstop，宁可 fail 也绝不污染草稿箱。
-    push_step(&job.id, "generate:brandguard", "硬广守卫（分平台植入强度）", "run", "按平台强度扫描引流特征");
+    let strength = crate::brand::strength_for(crate::brand::load().as_ref(), &job.platform);
+    let brand_rules = format!(
+        "# 硬广守卫规约（Rust 确定性正则，不靠模型自觉）\n\n\
+本平台植入强度：**{strength}**（{cn}）。命中任一即判 generate 失败。\n\n\
+一律拦（与强度无关，自动生成的稿子里出现即异常）：\n\
+- 手机号 `1[3-9]\\d{{9}}`\n\
+- 微信引流话术（微信号 / 加微信 / 加 V: / vx: / weixin:）\n\
+- 二维码话术（扫码关注 / 扫描二维码 / 扫一扫 / 识别二维码）\n\n\
+按强度拦链接与域名：\n\
+- **strong**：允许链接做出处，超过 3 条判「裸链堆砌」；\n\
+- **weak / zero**：任何 `http(s)://…` 或 `www.…` 域名都不许出现。\n",
+    );
+    push_step_attr(
+        &job.id,
+        "generate:brandguard",
+        "硬广守卫（分平台植入强度）",
+        "run",
+        "按平台强度扫描引流特征",
+        StepAttr {
+            prompt: brand_rules,
+            prompt_label: "校验规约（本地执行，不喂模型）".to_string(),
+            ..Default::default()
+        },
+    );
     let violations = crate::brand::hard_ad_guard(&job.platform, &body);
     if !violations.is_empty() {
         let msg = format!("命中 {} 项：{}", violations.len(), violations.join("；"));
@@ -1072,15 +1280,15 @@ fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageA
     }
     let system = crate::expert::expert_media_doc(attr.expert_id.clone(), job.platform.clone());
     let cn = platform_cn(&job.platform);
-    let prompt = format!(
-        "{system}\n\n---\n\n# 配图任务\n\n\
+    let task = format!(
+        "# 配图任务\n\n\
 通读将发布到「{cn}」的下文，自行决定封面与插图各画什么。只输出一个 JSON 对象，无解释无围栏：\n\
 {{\"cover\": \"封面画面描述\", \"inline\": [{{\"heading\": \"小标题原文\", \"prompt\": \"插图画面描述\"}}]}}\n\
 - cover 必填：60–120 字中文画面描述（主体/构图/色调/风格），画面**不出现任何文字**；\n\
 - inline 0–2 张，heading 逐字取自正文某个 `## 小标题`；\n\
-- 画面须来自文章具体信息点，禁通用模板。\n\n\
-# 文章全文\n\n{excerpt}\n",
+- 画面须来自文章具体信息点，禁通用模板。\n",
     );
+    let prompt = format!("{system}\n\n---\n\n{task}\n# 文章全文\n\n{excerpt}\n");
 
     push_step_attr(
         &job.id,
@@ -1088,7 +1296,13 @@ fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageA
         stage_label(STAGE_IMAGE),
         "run",
         &format!("{} 通读正文，构思封面与插图…", attr.expert_name),
-        StepAttr { prompt: prompt.clone(), ..attr.clone() },
+        StepAttr {
+            // 留痕只收任务，正文全文与画像都不抄进来——全文点「正文产物」能看，
+            // 画像点「改提示词」能看，抄进这一格只会把「交代了什么」淹掉。
+            prompt: format!("{task}\n（随任务一并喂入：本篇正文前 {} 字）\n", excerpt.chars().count()),
+            prompt_label: system_note(&attr.expert_name, &job.platform),
+            ..attr.clone()
+        },
     );
 
     // 1) 文本模型出画面描述（解析失败降级：用标题兜一个封面描述，不断流）
@@ -1155,12 +1369,19 @@ fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageA
 
     let mut assets = ImageAssets::default();
     let cover_out = md_path.with_extension("cover.png");
+    // 画面描述挂成该步提示词——点开「封面图/插图」那格就能逐字看到喂给生图模型的话；
+    // 归因照挂图卡导演，这几格是他出的稿，不该是三张没名没姓的空卡。
+    let img_attr = |p: &str| StepAttr {
+        prompt: p.to_string(),
+        prompt_label: "画面描述（喂给生图模型 Seedream）".to_string(),
+        ..attr.clone()
+    };
     match gen_one(&cover_prompt, &cover_out, "2048x1152", "封面") {
         Ok(()) => {
-            push_step(&job.id, "image:cover", "封面图", "ok", &format!("{}", cover_out.display()));
+            push_step_attr(&job.id, "image:cover", "封面图", "ok", &format!("{}", cover_out.display()), img_attr(&cover_prompt));
             assets.cover = Some(cover_out);
         }
-        Err(e) => push_step(&job.id, "image:cover", "封面图", "fail", &e),
+        Err(e) => push_step_attr(&job.id, "image:cover", "封面图", "fail", &e, img_attr(&cover_prompt)),
     }
 
     // 3) 插图：生成成功的按小标题插回 Markdown
@@ -1177,10 +1398,10 @@ fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageA
                     md_new.push_str(&format!("\n\n![配图]({})\n", out.display()));
                     log_line(log_path, &format!("image：正文未找到小标题「{heading}」，插图追加到文末"));
                 }
-                push_step(&job.id, &format!("image:i{}", i + 1), &format!("插图{}（{heading}）", i + 1), "ok", &format!("{}", out.display()));
+                push_step_attr(&job.id, &format!("image:i{}", i + 1), &format!("插图{}（{heading}）", i + 1), "ok", &format!("{}", out.display()), img_attr(p));
                 assets.inline.push(out);
             }
-            Err(e) => push_step(&job.id, &format!("image:i{}", i + 1), &format!("插图{}（{heading}）", i + 1), "fail", &e),
+            Err(e) => push_step_attr(&job.id, &format!("image:i{}", i + 1), &format!("插图{}（{heading}）", i + 1), "fail", &e, img_attr(p)),
         }
     }
     if md_new != article {
@@ -1197,6 +1418,29 @@ fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageA
 /// typeset：仅公众号有实义——md → 语义 HTML body（供 wechat_yiban --body-file）。
 /// 其余平台空转（draft_uploader 直接吃 .md），返回 None 表示不改产物路径。
 fn stage_typeset(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<Option<PathBuf>, String> {
+    // 排版是 Rust 确定性转换、不喂模型，但排版师的规约就是这份映射表——原样留下，
+    // 这一格才不是「有个专家名、点开一片空」。
+    push_step_attr(
+        &job.id,
+        STAGE_TYPESET,
+        stage_label(STAGE_TYPESET),
+        "run",
+        "",
+        StepAttr {
+            prompt: "# 排版规约（Rust 确定性转换，不下发模型）\n\n\
+仅公众号有实义，其余平台空转——投递脚本直接吃 .md。\n\n\
+Markdown → 公众号兼容语义 HTML 的逐行映射：\n\
+- `# / ## / ###` → `<h1> / <h2> / <h3>`\n\
+- `- ` 无序列表 → `<ul><li>`；`1. ` 有序列表 → `<ol><li>`；遇空行收口\n\
+- `> ` 引用 → `<blockquote>`；`---` → `<hr/>`\n\
+- `![alt](src)` → `<img style=\"max-width:100%\"/>`（配图阶段插回正文的本地图）\n\
+- 其余整行 → `<p>`；行内 `**加粗**` → `<strong>`、`` `代码` `` → `<code>`\n\n\
+红线：正文事实与观点一字不动，只改承载形式。\n"
+                .to_string(),
+            prompt_label: "排版规约（本地执行，不喂模型）".to_string(),
+            ..attr_for(&job.platform, "排版")
+        },
+    );
     if job.platform != "wechat" {
         log_line(log_path, "typeset：非公众号平台，跳过（脚本直接吃 .md）");
         return Ok(None);
@@ -1269,6 +1513,21 @@ fn stage_upload(job: &MediaJob, content_path: &Path, assets: &ImageAssets, log_p
         &format!("upload：脚本 {}（{source}）", script_path.display()),
     );
     // 留痕这一步真正落地的技能脚本：编排里配的 skill_id 是意图，这里是实际跑的那个文件。
+    // 这一格不喂模型，「提示词」就是真正下发的那条命令行——参数逐个摊开，
+    // 出了问题照着这行就能在终端复现。
+    let cmdline = {
+        let mut s = String::from("# 执行命令（投递脚本，不下发模型）\n\n```\n");
+        s.push_str(&format!("{python}\n"));
+        s.push_str(&format!("  {}\n", script_path.display()));
+        for pair in args.chunks(2) {
+            s.push_str(&format!("  {}\n", pair.join(" ")));
+        }
+        s.push_str("```\n\n");
+        s.push_str(&format!(
+            "脚本来源：{source}\n红线：只存草稿，绝不自动发布——窗口保留供人工预览后手动点发布。\n"
+        ));
+        s
+    };
     push_step_attr(
         &job.id,
         STAGE_UPLOAD,
@@ -1277,6 +1536,8 @@ fn stage_upload(job: &MediaJob, content_path: &Path, assets: &ImageAssets, log_p
         "",
         StepAttr {
             skill_script: format!("{}（{source}）", script_path.display()),
+            prompt: cmdline,
+            prompt_label: "执行命令（本地执行，不喂模型）".to_string(),
             ..attr_for(&job.platform, "投递")
         },
     );
@@ -1480,15 +1741,21 @@ fn run_job(job_id: String) {
         }
         update_job(&job_id, |j| j.stage = stage.clone());
         // 开跑即写下归因：这一格由编排里的哪个专家 / 哪个技能负责。阶段函数随后会用更细的
-        // attr（提示词全文、脚本实际路径）原位补齐——非空覆盖，不会把这里写的抹掉。
-        push_step_attr(
-            &job_id,
-            stage,
-            stage_label(stage),
-            "run",
-            "",
-            attr_for(&job0.platform, stage_workflow_step(stage)),
-        );
+        // attr（本步任务、脚本实际路径）原位补齐——非空覆盖，不会把这里写的抹掉。
+        //
+        // ★ generate 例外：它内部先跑「总规划」再跑正文，两格都由 stage_generate 自己按
+        // 真实先后押进时间线。这里若抢先占位，轨道就会排成「① 生成正文 → ② 总规划」，
+        // 把先想后写读成先写后想——顺序即因果，不能错。
+        if stage != STAGE_GENERATE {
+            push_step_attr(
+                &job_id,
+                stage,
+                stage_label(stage),
+                "run",
+                "",
+                attr_for(&job0.platform, stage_workflow_step(stage)),
+            );
+        }
 
         match stage.as_str() {
             STAGE_GENERATE => match stage_generate(&job0, &log_path) {
@@ -1623,8 +1890,9 @@ fn run_job(job_id: String) {
 /// 入参二选一确定平台/标题：
 ///   - 传 `queue_id`：从 mediaops 队列取平台/标题（跟进它的状态机与产物路径）；
 ///   - 或直接传 `platform` + `title`（+可选 `topic` 选题方向）。
-/// `stages` 省略=跑全部 `[generate, typeset, upload]`；可只跑子集。
+/// `stages` 省略=跑全部 `[generate, image, typeset, upload]`；可只跑子集。
 /// 跳过 generate 时用 `article_path`（或队列项已存的产物路径）作为正文来源。
+/// `plan` = 人在助手里过目并点「开始」的那份撰写规划；传了就按它落笔，不再另跑一次规划。
 #[cfg_attr(feature = "desktop", tauri::command)]
 #[allow(clippy::too_many_arguments)]
 pub fn media_job_start(
@@ -1635,8 +1903,11 @@ pub fn media_job_start(
     stages: Option<Vec<String>>,
     article_path: Option<String>,
     model: Option<String>,
+    plan: Option<String>,
 ) -> Result<MediaJob, String> {
-    // 解析平台 / 标题 / 已存产物：优先 queue_id，回落显式入参。
+    // 解析平台 / 标题 / 已存产物：队列项给默认值，**显式入参可覆盖**。
+    // 覆盖这条是必须的：排期巡检下的例行任务标题是占位文案（「【例行】…选题待定…」），
+    // 直接拿去当文章标题会写出一篇标题荒唐的稿子。
     let (platform, title, queue_article) = if let Some(qid) = &queue_id {
         let state = crate::mediaops::mediaops_state();
         let item = state
@@ -1644,7 +1915,18 @@ pub fn media_job_start(
             .into_iter()
             .find(|q| &q.id == qid)
             .ok_or_else(|| format!("队列项不存在：{qid}"))?;
-        (item.platform, item.title, item.article_path)
+        let placeholder = crate::mediaops::is_schedule_placeholder(&item);
+        let t = title
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| item.title.clone());
+        if placeholder && t == item.title {
+            return Err(
+                "这是排期下的「选题待定」占位任务，还没有真标题——先在题库/门户里给它定一个选题标题再开跑。"
+                    .to_string(),
+            );
+        }
+        (item.platform, t, item.article_path)
     } else {
         let p = platform
             .map(|s| s.trim().to_lowercase())
@@ -1685,6 +1967,7 @@ pub fn media_job_start(
         platform,
         title,
         topic: topic.unwrap_or_default(),
+        plan: plan.map(|p| p.trim().to_string()).unwrap_or_default(),
         model: model.map(|m| m.trim().to_string()).unwrap_or_default(),
         stages: stages_norm,
         skip_stages: Vec::new(),
@@ -1711,43 +1994,96 @@ pub fn media_job_status(job_id: String) -> Result<MediaJob, String> {
     get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))
 }
 
-/// 这条 job 的「总规划提示词」——整篇文章怎么写的那一整段，不是某个步骤的局部提示词。
-/// 详情卡中栏打开即读它，人不用点任何一格就能看见总纲。
+/// 一格阶段在**这条流水线里**具体干什么（阵容表用的人话，一行说清）。
+fn stage_duty(stage: &str) -> &'static str {
+    match stage {
+        STAGE_GENERATE => "按上面的思路落笔，出 Markdown 正文，过内容守卫与硬广守卫",
+        STAGE_IMAGE => "通读终稿定画面，出封面 + 至多 2 张插图，插图按小标题插回正文",
+        STAGE_TYPESET => "把 Markdown 转成平台原生观感的语义 HTML，事实与观点一字不动",
+        STAGE_UPLOAD => "驱动平台后台把成稿存成草稿——只存草稿，绝不自动发布",
+        _ => "",
+    }
+}
+
+/// 这条 job 的「总规划」——**这篇文章的思路**，不是主笔的提示词。
 ///
-/// 两条来源，留痕优先：
-///   - generate 已跑过 → 原样回放当时落盘的快照（专家/补丁事后被改也不影响历史回放）；
-///   - 还没跑到（排队中/刚开跑）→ 按当前专家画像 + 平台补丁 + 品牌契约现拼一份预览。
-/// 不含 generate 阶段的 job（直接拿现成正文排版投递）没有这东西，返回空串由 UI 说明。
+/// 三段：主笔动笔前自拟的本篇思路（内容 / 感觉 / 写法）、这稿要过的专家阵容
+/// （每一格谁负责、在本篇干什么）、本篇基本盘。主笔那两千多字的画像 + 平台补丁
+/// 不进这里——它挂在「写作」那一格上，点进去或点「改提示词」看。
+///
+/// 思路一栏三条来源：generate:plan 已成稿 → 主笔原话；还在跑/失败 → 说明当前状态；
+/// 还没跑到 → 占位说明。阵容与基本盘任何时候都算得出来，排队中的 job 打开就有东西看。
 #[cfg_attr(feature = "desktop", tauri::command)]
 pub fn media_job_plan_prompt(job_id: String) -> Result<MediaJobPlan, String> {
     let job = get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))?;
-    if let Some(s) = job
-        .steps
-        .iter()
-        .rev()
-        .find(|s| s.key == STAGE_GENERATE && !s.prompt.is_empty())
-    {
-        return Ok(MediaJobPlan {
-            prompt: s.prompt.clone(),
-            expert_id: s.expert_id.clone(),
-            expert_name: s.expert_name.clone(),
-            recorded: true,
-        });
+    let has_generate = job.stages.iter().any(|s| s == STAGE_GENERATE);
+    let plan_step = job.steps.iter().rev().find(|s| s.key == "generate:plan");
+
+    // ── 一、本篇思路 ──
+    let recorded = plan_step.map(|s| s.status == "ok").unwrap_or(false);
+    let idea = match plan_step {
+        Some(s) if s.status == "ok" => s.detail.clone(),
+        Some(s) if s.status == "run" => "主笔正在构思本篇（内容 · 感觉 · 写法），想完就落在这里。".to_string(),
+        Some(s) => format!("主笔这次没能拟出思路：{}", s.detail),
+        None if has_generate => {
+            "主笔动笔前会先为本篇自拟总规划——做成什么内容、给读者什么感觉、用什么写法体现。\n\
+跑到「生成正文」那一步，他的原话就落在这里。"
+                .to_string()
+        }
+        None => "这条流水线不含生成阶段（直接拿现成正文排版投递），没有主笔思路。".to_string(),
+    };
+
+    // ── 二、专家阵容：这稿要过谁的手，各干什么 ──
+    let mut crew = String::new();
+    for stage in &job.stages {
+        let a = attr_for(&job.platform, stage_workflow_step(stage));
+        let who = if a.expert_name.is_empty() {
+            "未编排专家".to_string()
+        } else {
+            a.expert_name.clone()
+        };
+        crew.push_str(&format!(
+            "- **{}** · {who}——{}\n",
+            stage_workflow_step(stage),
+            stage_duty(stage)
+        ));
     }
-    if !job.stages.iter().any(|s| s == STAGE_GENERATE) {
-        return Ok(MediaJobPlan {
-            prompt: String::new(),
-            expert_id: String::new(),
-            expert_name: String::new(),
-            recorded: false,
-        });
+    if crew.is_empty() {
+        crew.push_str("- （这条 job 没有阶段编排）\n");
     }
-    let (attr, prompt) = build_generate_prompt(&job, None);
+
+    // ── 三、基本盘 ──
+    let attr = if has_generate {
+        build_generate_prompt(&job, None).0
+    } else {
+        attr_for(&job.platform, "写作")
+    };
+    let topic = if job.topic.trim().is_empty() {
+        "（未提供，按标题自行立意）"
+    } else {
+        job.topic.trim()
+    };
+
+    let prompt = format!(
+        "# 本篇思路\n\n{idea}\n\n# 专家阵容（这稿要过的手）\n\n{crew}\n\
+# 本篇基本盘\n\n\
+- 平台：{cn}\n\
+- 标题：《{title}》\n\
+- 方向/要点：{topic}\n\
+- 主笔：{writer}\n\
+- 生成模型：{model}\n\n\
+主笔那份画像 + 平台补丁不在这页——它挂在「生成正文」那一格上，点开即见，或点「改提示词」直接改。\n",
+        cn = platform_cn(&job.platform),
+        title = job.title,
+        writer = if attr.expert_name.is_empty() { "未编排".to_string() } else { attr.expert_name.clone() },
+        model = if job.model.trim().is_empty() { "claude CLI 默认" } else { job.model.trim() },
+    );
+
     Ok(MediaJobPlan {
         prompt,
         expert_id: attr.expert_id,
         expert_name: attr.expert_name,
-        recorded: false,
+        recorded,
     })
 }
 
@@ -1936,6 +2272,74 @@ mod tests {
         assert!(attr_for("wechat", "查无此环节").expert_id.is_empty());
     }
 
+    /// 篇幅按平台走，且与平台补丁里写的口径一致——此前写作任务硬编码「不少于 1200 字」，
+    /// 与小红书补丁的「正文 300~800 字」在同一份提示词里对撞。
+    #[test]
+    fn word_range_follows_platform_not_a_global_constant() {
+        assert_eq!(word_range("xhs"), (300, 800), "与 xhs 平台补丁口径一致");
+        assert!(word_range("douyin").1 < word_range("wechat").1, "抖音该比公众号短");
+        assert!(word_range("zhihu").0 >= 1200, "知乎是长论证平台");
+        // 守卫下限跟着平台走，抖音的短文不会被当成「异常产物」拦掉。
+        assert!(min_article_chars("douyin") < word_range("douyin").0);
+        assert!(min_article_chars("wechat") >= 100);
+    }
+
+    /// 写作任务里不许再出现跨平台的固定字数常量。
+    #[test]
+    fn generate_task_carries_platform_word_range() {
+        let job = MediaJob {
+            id: "t".into(),
+            queue_id: None,
+            platform: "xhs".into(),
+            title: "标题".into(),
+            topic: String::new(),
+            plan: String::new(),
+            model: String::new(),
+            stages: vec![STAGE_GENERATE.into()],
+            skip_stages: Vec::new(),
+            status: "pending".into(),
+            stage: String::new(),
+            steps: Vec::new(),
+            article_path: None,
+            log_path: String::new(),
+            error: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let (_attr, _prompt, task) = build_generate_prompt(&job, None);
+        assert!(task.contains("300~800 字"), "小红书应按本平台区间要求篇幅：{task}");
+        assert!(!task.contains("不少于 1200 字"), "不该再有跨平台的固定字数：{task}");
+    }
+
+    /// 人过目的规划要真的进提示词，且落在「硬性要求」之前——规划是怎么写，
+    /// 硬性要求与品牌契约是不许越的线，线必须压在最后。
+    #[test]
+    fn approved_plan_is_woven_before_hard_rules() {
+        let job = MediaJob {
+            id: "t".into(),
+            queue_id: None,
+            platform: "wechat".into(),
+            title: "标题".into(),
+            topic: String::new(),
+            plan: "先讲冲突，再给三条方法，最后收在观点上。".into(),
+            model: String::new(),
+            stages: vec![STAGE_GENERATE.into()],
+            skip_stages: Vec::new(),
+            status: "pending".into(),
+            stage: String::new(),
+            steps: Vec::new(),
+            article_path: None,
+            log_path: String::new(),
+            error: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let (_attr, _prompt, task) = build_generate_prompt(&job, None);
+        let plan_at = task.find("先讲冲突").expect("规划应织进本篇任务");
+        let rules_at = task.find("硬性要求").expect("硬性要求应在");
+        assert!(plan_at < rules_at, "规划要排在硬性要求之前：{task}");
+    }
+
     /// 归因用非空覆盖：run 那格写下的提示词，不能被收尾的 ok/fail（传空 attr）抹掉。
     #[test]
     fn push_step_attr_merges_without_erasing_prompt() {
@@ -1948,6 +2352,7 @@ mod tests {
                 platform: "wechat".into(),
                 title: "t".into(),
                 topic: String::new(),
+                plan: String::new(),
                 model: String::new(),
                 stages: vec![STAGE_GENERATE.into()],
                 skip_stages: Vec::new(),
@@ -1998,6 +2403,7 @@ mod tests {
             platform: "wechat".into(),
             title: "t".into(),
             topic: String::new(),
+            plan: String::new(),
             model: String::new(),
             stages: stages.iter().map(|s| s.to_string()).collect(),
             skip_stages: Vec::new(),

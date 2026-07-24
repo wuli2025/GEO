@@ -1,1 +1,0 @@
-**公众号 · 投递**：登录态 `~/.polaris-mp-profile`，未登录转账号管家扫码。走 wechat_yiban.py：ProseMirror 合成粘贴（ClipboardEvent+DataTransfer，降级 execCommand），填标题/作者/微信兼容 HTML 正文，传 2.35:1 封面，触发「保存为草稿」并校验草稿箱后返回 draft_uploaded。铁律：绝不点「群发/发表/定时群发」。失败降级：开编辑页 + 正文进剪贴板 + 提示手动粘贴，浏览器保持打开。

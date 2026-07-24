@@ -42,6 +42,14 @@ const expertName = computed(() => {
   return e ? `${e[1]} · ${e[2]}` : props.expertId;
 });
 
+/**
+ * 流水线里真正把画像 + 补丁喂给模型的只有这两位：写作（generate）与配图（image）。
+ * 排版是 Rust 确定性转换、投递是 Python 脚本，都不下发提示词——那两格的补丁写得再好
+ * 也进不了任何一次模型调用。这里如实说明，别让人对着一个不生效的输入框调半天。
+ */
+const DRIVES_MODEL = ["media-writer", "media-imagedirector"];
+const drivesModel = computed(() => DRIVES_MODEL.includes(props.expertId));
+
 const plat = ref<string>(isReal(props.platform) ? props.platform : "wechat");
 const doc = ref("");
 const docErr = ref<string | null>(null);
@@ -140,6 +148,11 @@ async function save() {
         detail: `人工在专家提示词抽屉里改写平台补丁（${before.length} → ${overlay.value.length} 字符）。`,
         diff: lineDiff(before, overlay.value),
         proposer: "human",
+        // 证据 = 这次落地的版本 id：飞轮健康度数的就是「能追溯到具体度量/版本的变更」，
+        // 不给证据的话这条永远不计入，健康度恒为 0，红灯就成了常量。
+        evidence: [`prompt-version:${v.id}`],
+        // 保存即生效，不是待验证的提案 —— 直接记「已固化」，不进观察期。
+        status: "已固化",
       },
     );
     await loadVersions();
@@ -163,7 +176,12 @@ async function rollback(v: PromptVersion) {
     await evolutionApi.add(
       "prompt",
       `${expertName.value} @ ${platName(plat.value)} 回滚到 v${target.version}`,
-      { detail: "人工在专家提示词抽屉里一键回滚，内容已写回 overlay 文件。", proposer: "human" },
+      {
+        detail: "人工在专家提示词抽屉里一键回滚，内容已写回 overlay 文件。",
+        proposer: "human",
+        evidence: [`prompt-version:${target.id}`],
+        status: "已固化",
+      },
     );
     await Promise.all([loadVersions(), load()]);
     toast.success(`已回滚到 v${target.version} 并写回生效`);
@@ -200,6 +218,13 @@ onMounted(() => { load(); loadVersions(); });
         <button class="xbtn" title="关闭" @click="emit('close')">✕</button>
       </div>
       <div class="gd-body">
+        <div v-if="!drivesModel" class="card" style="padding:10px 14px;border-color:var(--warn)">
+          <span style="font-size:var(--text-xs);color:var(--dim)">
+            这一格<b style="color:var(--ink2)">不下发提示词</b>——排版是本地确定性转换、投递是浏览器脚本，
+            都不调模型。这里的补丁只作为该环节的规约留档，不会进入任何一次模型调用。
+            真正吃提示词的是<b style="color:var(--ink2)">写作</b>与<b style="color:var(--ink2)">配图</b>两格。
+          </span>
+        </div>
         <div v-if="!lockPlatform" class="fld">
           <span>平台（补丁按平台生效）</span>
           <select v-model="plat" class="inp">

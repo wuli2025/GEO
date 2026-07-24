@@ -501,7 +501,32 @@ export const mediaOps = {
     invoke<void>("mediaops_metric_add", { platform, kind, tokens, cost, detail }),
   metricsSummary: () =>
     invoke<{ d7: MediaKpi; d30: MediaKpi; perPlatform: Record<string, MediaKpi> }>("mediaops_metrics_summary"),
+  /** 读各平台最新抓取快照（秒回，看板加载时用）。没抓过 = 空数组。 */
+  crawlSnapshots: () => invoke<MediaCrawlSnapshot[]>("mediaops_crawl_snapshots"),
+  /** 跑一轮平台后台抓取。**很慢**（每平台约 25 秒），调用方必须给转圈。空 = 抓全部。 */
+  crawlRun: (platforms?: MediaPlatform[]) =>
+    invoke<MediaCrawlSnapshot[]>("mediaops_crawl_run", { platforms }),
 };
+
+/**
+ * 平台创作者后台抓取快照（metrics_crawler.py 产物）。
+ *
+ * 与 MediaKpi 的分工：MediaKpi 是「我们自己干了什么」（跑了几次 / 出了几篇草稿 / 烧了多少
+ * token），本地事件就能算；本快照是「发出去之后平台上发生了什么」（阅读 / 展现 / 粉丝 /
+ * 收益），只有平台后台有，得登录去抓。看板上「阅读 / 点击」那张卡问的是后者。
+ */
+export interface MediaCrawlSnapshot {
+  platform: MediaPlatform;
+  name: string;
+  crawledAt: string;
+  crawledTs: number;
+  /** false = 跑通了但一个指标都没抓到——要与「真的是 0」区分开 */
+  ok: boolean;
+  /** fans / reads / impressions / likes / comments / shares / income（缺的就是没抓到） */
+  summary: Partial<Record<
+    "fans" | "reads" | "impressions" | "likes" | "comments" | "shares" | "income", number
+  >>;
+}
 
 // ──────────────────────────────────────────────────────────────
 // 火山方舟 API 中心（ark.rs）：生图 / 连通测试 / 模型列表
@@ -559,7 +584,9 @@ export const evolutionApi = {
   insightUpdate: (id: string, patch: { title?: string; content?: string; scope?: string; tags?: string[]; evidence?: string[] }) =>
     invoke<InsightCard>("insight_update", { id, ...patch }),
   insightDelete: (id: string) => invoke<void>("insight_delete", { id }),
-  add: (kind: string, title: string, opts?: { detail?: string; diff?: string; proposer?: string; expect?: string; insightIds?: string[]; evidence?: string[] }) =>
+  /** status 缺省「观察中」（= 待验证的提案）；已经落地生效的变更传「已固化」，
+   *  否则每保存一次就多一张永远无人裁决的观察卡。 */
+  add: (kind: string, title: string, opts?: { detail?: string; diff?: string; proposer?: string; expect?: string; insightIds?: string[]; evidence?: string[]; status?: "观察中" | "已固化" | "已回滚" }) =>
     invoke<EvolutionEntry>("evolution_add", { kind, title, ...opts }),
   decide: (id: string, status: "已固化" | "已回滚" | "观察中", actual?: string) =>
     invoke<EvolutionEntry>("evolution_decide", { id, status, actual }),
@@ -584,8 +611,11 @@ export interface MediaJobStep {
   expertId: string; expertName: string;
   /** 编排里挂的技能 id / 本步实际落地的脚本 */
   skillId: string; skillScript: string;
-  /** 喂给模型的提示词全文快照（仅 generate 有） */
+  /** 本步专属的那段话：写作任务 / 画面描述 / 校验规约 / 执行命令。
+   *  不含专家画像 + 平台补丁（那份每格都一样，点「改提示词」看） */
   prompt: string;
+  /** 上面那段 prompt 是什么东西的人话小标（老快照为空串） */
+  promptLabel: string;
   /** 快照当时生效的 overlay 版本 id（对应 PromptVersion.id，可空） */
   promptVersionId: string;
   /** 专家卡的推荐模型档——不等于实际跑的模型（generate 走 CLI 默认） */
@@ -594,22 +624,25 @@ export interface MediaJobStep {
 }
 export interface MediaJob {
   id: string; queueId?: string; platform: string; title: string; topic: string;
+  /** 人已过目的撰写规划（空=由主笔自拟） */
+  plan?: string;
   stages: string[]; skipStages?: string[]; status: "pending" | "running" | "done" | "failed" | "canceled";
   stage: string; steps: MediaJobStep[]; articlePath?: string; logPath: string; error?: string;
   createdAt: number; updatedAt: number;
 }
-/** 一条 job 的总规划提示词（整篇文章的总纲，区别于步骤级的局部提示词） */
+/** 一条 job 的总规划——**这篇文章的思路**，不是主笔的提示词 */
 export interface MediaJobPlan {
-  /** 提示词全文（空=这条 job 不含生成阶段，用的是现成正文） */
+  /** 总规划全文：本篇思路（主笔自拟） + 专家阵容 + 本篇基本盘 */
   prompt: string;
   /** 站在「写作」这一格上的专家（「改提示词」入口指向他） */
   expertId: string;
   expertName: string;
-  /** true=generate 已跑过，这是当时真正喂进去的原文；false=还没跑到，按当前配置现拼的预览 */
+  /** true=主笔已把本篇思路想出来了，这段是他的原话；false=还没跑到，思路一栏是占位说明 */
   recorded: boolean;
 }
 export const mediaJob = {
-  start: (a: { queueId?: string; platform?: string; title?: string; topic?: string; stages?: string[]; articlePath?: string; model?: string }) =>
+  /** plan = 人在助手里过目并点「开始」的那份撰写规划；传了就按它落笔，不再另跑一次规划 */
+  start: (a: { queueId?: string; platform?: string; title?: string; topic?: string; stages?: string[]; articlePath?: string; model?: string; plan?: string }) =>
     invoke<MediaJob>("media_job_start", a),
   status: (jobId: string) => invoke<MediaJob>("media_job_status", { jobId }),
   list: () => invoke<MediaJob[]>("media_job_list"),
@@ -620,7 +653,7 @@ export const mediaJob = {
   log: (jobId: string, tailLines?: number) => invoke<string>("media_job_log", { jobId, tailLines }),
   /** 正文产物内容（.md / 公众号语义 .html） */
   article: (jobId: string) => invoke<string>("media_job_article", { jobId }),
-  /** 总规划提示词：整篇文章怎么写的那一整段（详情卡中栏默认内容） */
+  /** 总规划：这篇文章的思路 + 要过的专家阵容（详情卡中栏默认内容） */
   planPrompt: (jobId: string) => invoke<MediaJobPlan>("media_job_plan_prompt", { jobId }),
 };
 
@@ -687,6 +720,16 @@ export interface BrandDoc {
   /** 超过单文件预算 → 写作时只喂前 4000 字 */
   truncated: boolean;
 }
+/** 按路径导入一份资料的结果（PDF/Word 会被抽成 `原名.md`） */
+export interface BrandDocImport {
+  /** 落进 brand-docs/ 后的文件名 */
+  name: string;
+  /** 原始文件名（失败时靠它指认是哪一份） */
+  source: string;
+  chars: number;
+  ok: boolean;
+  error?: string;
+}
 export const brand = {
   get: () => invoke<BrandProfile>("brand_profile_get"),
   set: (profile: BrandProfile) => invoke<void>("brand_profile_set", { profile }),
@@ -699,6 +742,8 @@ export const brand = {
   /** 品牌资料：列表 / 上传（同名覆盖）/ 删除 / 读全文 */
   docList: () => invoke<BrandDoc[]>("brand_doc_list"),
   docSave: (name: string, content: string) => invoke<void>("brand_doc_save", { name, content }),
+  /** 按**绝对路径**导入（拖拽/选择都走这条）：后端读盘，PDF/Word/Excel 顺手抽成 Markdown */
+  docImport: (paths: string[]) => invoke<BrandDocImport[]>("brand_doc_import", { paths }),
   docDelete: (name: string) => invoke<void>("brand_doc_delete", { name }),
   docRead: (name: string) => invoke<string>("brand_doc_read", { name }),
   /** [brand.json 路径, brand-docs 目录路径] */
@@ -2376,7 +2421,7 @@ function browserStub(cmd: string, _args?: Record<string, unknown>): unknown {
         presets: [
           { id: "minimax-image", name: "MiniMax 图像", flavor: "minimax", endpoint: "https://api.minimaxi.com/v1/image_generation", model: "image-01", note: "国内可直连;画幅走 aspect_ratio(16:9 等)" },
           { id: "openai-image", name: "OpenAI 图像", flavor: "openai", endpoint: "https://api.openai.com/v1/images/generations", model: "gpt-image-1", note: "官方或任何兼容网关;画幅走 size(1024x1024 等)" },
-          { id: "doubao-image", name: "豆包 Seedream(方舟)", flavor: "openai", endpoint: "https://ark.cn-beijing.volces.com/api/v3/images/generations", model: "doubao-seedream-4-0-250828", note: "火山方舟;说 OpenAI 形状,模型名需在方舟控制台确认" },
+          { id: "doubao-image", name: "豆包 Seedream(方舟)", flavor: "openai", endpoint: "https://ark.cn-beijing.volces.com/api/v3/images/generations", model: "doubao-seedream-5-0-260128", note: "火山方舟 Seedream 5.0;说 OpenAI 形状,模型名需在方舟控制台确认" },
         ],
       };
     case "forge_image":

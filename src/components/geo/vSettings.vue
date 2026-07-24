@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * 设置中心：原「API 中心」并入此处。
- * - chan/tier/img：模型通道 / 模型分层 / 生图通道（接真火山方舟 ark 组）；
+ * - chan：模型通道 —— 切换中心（cc-switch 复刻）当主角，一屏换模型；
+ * - tier/img：模型分层 / 生图通道（火山方舟 ark 组的密钥与模型收在 img 页折叠区）；
  * - update：我们的更新（自建 CDN 主源 + 多源回退，转发 useUpdater 状态机）；
  * - env：环境医生（复用 EnvDoctor 面板模式，随时复检 / 重装）。
  */
@@ -24,6 +25,8 @@ const props = defineProps<{ sub: string; platform: string }>();
 
 // 头部随子页切换（api 三页共用旧文案，其余各自表述）
 const HEADS: Record<string, [string, string]> = {
+  chan: ["模型通道", "设置 / 点一下换一家模型 —— Kimi For Coding、MiniMax、豆包 Seed 或自填任意通道，切换即写环境"],
+  img: ["生图通道", "设置 / 文生图独立链路 —— 火山方舟 Seedream 5.0 默认，另可配 MiniMax / OpenAI 兼容"],
   update: ["我们的更新", "设置 / 应用自动更新 —— 自建 CDN 托管、多源自动回退，下载安装后自动重启生效"],
   env: ["环境医生", "设置 / 运行环境监测与一键安装修复（Claude Code / Node / Shell / uv）"],
 };
@@ -121,7 +124,7 @@ interface ImgModel {
 }
 const imageModels = computed<ImgModel[]>(() => [
   {
-    model: cfg.value.imageModel?.trim() || "doubao-seedream-4-5-251128",
+    model: cfg.value.imageModel?.trim() || "doubao-seedream-5-0-260128",
     channel: "火山方舟 Ark",
     status: "live",
     note: "真接线 ark_image_generate（ark.rs）· 生图通道当前默认",
@@ -154,71 +157,29 @@ const imgCode = computed(
   <div>
     <div v-html="head"></div>
 
-    <!-- 模型通道（接真 ark 配置） -->
+    <!-- 模型通道：切换中心当主角，一屏之内换模型 -->
     <template v-if="props.sub === 'chan'">
       <section>
+        <ProviderSwitch big />
+      </section>
+
+      <section style="margin-top: 16px">
         <div class="grid g2">
           <div class="card">
-            <h3>火山引擎 Ark（默认通道，可换自己的 key）</h3>
-            <div class="fld" style="margin-bottom: 10px">
-              <span>API Key</span>
-              <div style="display: flex; gap: 6px">
-                <input :type="showKey ? 'text' : 'password'" v-model="cfg.apiKey" class="inp" placeholder="ark api key" />
-                <button class="btn ghost" @click="showKey = !showKey">{{ showKey ? "隐藏" : "明文" }}</button>
-              </div>
-            </div>
-            <div class="fld" style="margin-bottom: 10px"><span>Base URL</span><input v-model="cfg.baseUrl" class="inp" placeholder="https://ark.cn-beijing.volces.com/api/v3" /></div>
-            <div class="grid g2" style="margin-bottom: 10px">
-              <div class="fld"><span>生图模型</span><input v-model="cfg.imageModel" class="inp" placeholder="doubao-seedream-4-5" /></div>
-              <div class="fld"><span>对话模型</span><input v-model="cfg.chatModel" class="inp" placeholder="doubao-…" /></div>
-            </div>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap">
-              <button class="btn" :disabled="saving" @click="save"><span v-if="saving" class="spin" style="margin-right: 6px">◔</span>保存</button>
-              <button class="btn ghost" :disabled="!!testing" @click="testConn"><span v-if="testing === 'conn'" class="spin" style="margin-right: 6px">◔</span>测试连通性</button>
-              <button class="btn ghost" :disabled="!!testing" @click="testChat"><span v-if="testing === 'chat'" class="spin" style="margin-right: 6px">◔</span>测试对话</button>
-            </div>
-            <div v-if="testRes" class="callout" :class="testRes.ok ? 'g' : 'r'" style="margin-top: 12px; font-size: var(--text-xs)">{{ testRes.text }}</div>
-            <p class="foot">默认 key 对应账号须在方舟控制台开通生图模型服务；报 <code>ModelNotOpen</code> 时去 console.volcengine.com/ark 开通，或在此换自己的 key。</p>
+            <h3>换成自己的通道</h3>
+            <ul>
+              <li>列表里点 <b>Kimi For Coding</b> / <b>MiniMax</b> / <b>豆包 Seed</b> 等预设 → 弹窗粘 Key 即切；模型名留空走该家默认；</li>
+              <li>没有的家点右上角 <b>添加供应商</b> 自填：名称 / Base URL / API Key / 模型名；OpenAI 协议的家勾「OpenAI 协议」，经 Polaris 本地路由翻译转发；</li>
+              <li><b>联动系统 CLI</b> 打开时，切换会写进 <code>~/.claude/settings.json</code>，终端 <code>claude</code> 跟着一起变；关掉则只作用于 Polaris 自己。</li>
+            </ul>
           </div>
           <div class="card">
-            <h3>MiniMax M3 通道</h3>
-            <p>备用国产模型通道；密钥入 providers 体系而非裸环境变量。</p>
-            <h3 style="margin-top: 12px">Claude 双通道（基座）</h3>
+            <h3>Claude 双通道（基座）</h3>
             <ul>
               <li><b>headless claude</b>（<code>headless.rs</code>）：流水线各步判分、事实校验、结构化决策；只读白名单（Read/Glob/Grep），stdin 喂 prompt，<b>输出 JSON 决策数据，Rust 执行改动</b>；</li>
               <li><b>chat_send 流式对话</b>：写作/评审等长产出 + 人在环节介入；skill 注入系统提示，平台宪法作为会话宪法。</li>
             </ul>
-          </div>
-        </div>
-      </section>
-
-      <!-- 切换中心（cc-switch 复刻的供应商坞·内联版；与侧栏坞共用 store） -->
-      <section style="margin-top: 16px">
-        <ProviderSwitch />
-      </section>
-
-      <!-- 生图模型清单 -->
-      <section style="margin-top: 16px">
-        <div class="card">
-          <h3>生图模型
-            <span style="font-size: var(--text-xs); color: var(--muted); font-weight: 400">已接通 / 占位 · 据真实链路核实</span>
-          </h3>
-          <div class="imglist">
-            <div v-for="m in imageModels" :key="m.model" class="imgrow" :class="{ live: m.status === 'live', def: m.arkDefault }">
-              <span class="imgdot" :class="m.status" />
-              <div class="imginfo">
-                <div class="imgname">
-                  {{ m.model }}
-                  <span v-if="m.arkDefault" class="imgtag def">当前默认</span>
-                </div>
-                <div class="imgnote">{{ m.channel }} · {{ m.note }}</div>
-              </div>
-              <span class="imgstat" :class="m.status">{{ statusLabel[m.status] }}</span>
-            </div>
-          </div>
-          <div style="display: flex; gap: 8px; margin-top: 12px; align-items: center">
-            <button class="btn ghost" data-gosub="img">前往生图通道（img 子标签）→</button>
-            <span class="foot" style="margin: 0">火山方舟 Seedream 为默认生图链路；MiniMax image-01 供故事视频插画；gpt-image-2 为技能占位</span>
+            <p class="foot">生图不走这里 —— 文生图是另一条 OpenAI 形状的链路，见「生图通道」子标签。</p>
           </div>
         </div>
       </section>
@@ -289,9 +250,56 @@ const imgCode = computed(
           <div v-if="imgRes" class="callout" :class="imgRes.ok ? 'g' : 'r'" style="font-size: var(--text-xs)">{{ imgRes.text }}</div>
           <pre><code>{{ imgCode }}</code></pre>
           <ul>
-            <li>模型缺省 <code>doubao-seedream-4-5</code>；接口报「模型不存在/未开通」时脚本自动 GET /models 捞 seedream 系列挨个重试；</li>
+            <li>模型缺省 <code>doubao-seedream-5-0-260128</code>（Seedream 5.0）；接口报「模型不存在/未开通」时脚本自动 GET /models 捞 seedream 系列挨个重试；</li>
             <li>无密钥时回退 HTML 模拟图（保底不断流）；密钥入 providers 体系而非裸环境变量。</li>
           </ul>
+
+          <!-- 方舟密钥：从「模型通道」页收进这里，默认折叠 —— 生图才用得上，平时不占眼 -->
+          <details class="arkfold">
+            <summary>方舟密钥与模型（仅生图用，一般不用动）</summary>
+            <div class="fld" style="margin: 10px 0">
+              <span>API Key</span>
+              <div style="display: flex; gap: 6px">
+                <input :type="showKey ? 'text' : 'password'" v-model="cfg.apiKey" class="inp" placeholder="ark api key" />
+                <button class="btn ghost" @click="showKey = !showKey">{{ showKey ? "隐藏" : "明文" }}</button>
+              </div>
+            </div>
+            <div class="fld" style="margin-bottom: 10px"><span>Base URL</span><input v-model="cfg.baseUrl" class="inp" placeholder="https://ark.cn-beijing.volces.com/api/v3" /></div>
+            <div class="grid g2" style="margin-bottom: 10px">
+              <div class="fld"><span>生图模型</span><input v-model="cfg.imageModel" class="inp" placeholder="doubao-seedream-5-0-260128" /></div>
+              <div class="fld"><span>对话模型</span><input v-model="cfg.chatModel" class="inp" placeholder="doubao-…" /></div>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap">
+              <button class="btn" :disabled="saving" @click="save"><span v-if="saving" class="spin" style="margin-right: 6px">◔</span>保存</button>
+              <button class="btn ghost" :disabled="!!testing" @click="testConn"><span v-if="testing === 'conn'" class="spin" style="margin-right: 6px">◔</span>测试连通性</button>
+              <button class="btn ghost" :disabled="!!testing" @click="testChat"><span v-if="testing === 'chat'" class="spin" style="margin-right: 6px">◔</span>测试对话</button>
+            </div>
+            <div v-if="testRes" class="callout" :class="testRes.ok ? 'g' : 'r'" style="margin-top: 12px; font-size: var(--text-xs)">{{ testRes.text }}</div>
+            <p class="foot">这份密钥只喂生图（<code>/images/generations</code>）；对话模型请在「模型通道」的切换中心选。账号需在 console.volcengine.com/ark 开通对应生图模型，报 <code>AccountOverdueError</code> 是欠费、报 <code>InvalidEndpointOrModel.NotFound</code> 是模型 id 写错。</p>
+          </details>
+        </div>
+      </section>
+
+      <!-- 生图模型清单（原在「模型通道」页，随生图一并搬来） -->
+      <section style="margin-top: 16px">
+        <div class="card">
+          <h3>生图模型
+            <span style="font-size: var(--text-xs); color: var(--muted); font-weight: 400">已接通 / 占位 · 据真实链路核实</span>
+          </h3>
+          <div class="imglist">
+            <div v-for="m in imageModels" :key="m.model" class="imgrow" :class="{ live: m.status === 'live', def: m.arkDefault }">
+              <span class="imgdot" :class="m.status" />
+              <div class="imginfo">
+                <div class="imgname">
+                  {{ m.model }}
+                  <span v-if="m.arkDefault" class="imgtag def">当前默认</span>
+                </div>
+                <div class="imgnote">{{ m.channel }} · {{ m.note }}</div>
+              </div>
+              <span class="imgstat" :class="m.status">{{ statusLabel[m.status] }}</span>
+            </div>
+          </div>
+          <p class="foot">火山方舟 Seedream 5.0 为默认生图链路；MiniMax image-01 供故事视频插画；gpt-image-2 为技能占位。</p>
         </div>
       </section>
 
@@ -321,6 +329,12 @@ const imgCode = computed(
 .imgstat { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 5px; flex-shrink: 0; }
 .imgstat.live { color: #16a34a; background: #16a34a14; border: 1px solid #16a34a55; }
 .imgstat.placeholder { color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
+
+/* 方舟密钥折叠区（生图页） */
+.arkfold { margin-top: 12px; border: 1px solid var(--border-soft); border-radius: 9px; padding: 9px 11px; background: var(--bg-soft); }
+.arkfold > summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; }
+.arkfold > summary:hover { color: var(--text); }
+.arkfold[open] > summary { margin-bottom: 4px; color: var(--text); }
 
 /* 我们的更新 */
 .updrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

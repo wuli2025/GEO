@@ -1,15 +1,14 @@
 <script setup lang="ts">
 /**
- * 流程详情卡：一条投递流水线 job 的全貌——
- *  - 顶：**工作流轨道**。总规划 → 逐格步骤横着一条流铺开（原来它缩在左下角一列，
- *    既看不出先后关系，也占着最好的一块地）。点哪一格，下面中栏就换成哪一格的提示词。
- *    轨道上面一行是这条 job 的基本信息与产物入口。
- *  - 左（宽）：**只放提示词**——喂给模型的原文，按段落/要点结构化排出来，字号放大。
- *    打开即是**整篇文章的总规划提示词**（写作专家画像 + 本平台补丁 + 写作任务 + 品牌契约），
- *    不必先去点某个人格才看得到提示词；点轨道上某一格才切成那一步的局部提示词。
- *  - 右：对话操控——步骤节点、后端（claude CLI + 脚本）跑的每一个动作、模型回复
- *    汇成一条流，像正常聊天一样往下淌
- * 失败/中断的 job，「继续」直接摆在卡片最上面的操作条上。
+ * 流程详情卡：一条投递流水线 job 的全貌——左 4 右 6 两栏，**对话是主角**。
+ *  - 右（6 成宽，从顶条底下一直通到底）：**对话操控**。这条流水线每做完一件事就发一条消息，
+ *    像正常聊天一样一部分一部分地淌下来；人在最下面接着追问。
+ *  - 左（4 成宽）：上面是**工作流轨道**（总纲 → ① → ② → …，点哪格下面换哪格的提示词）
+ *    与这条 job 的基本信息、产物入口；下面是**提示词**——按段落/要点排开。
+ *    打开即是**总规划**：这篇文章的思路（主笔动笔前自拟）+ 要过的专家阵容 + 本篇基本盘。
+ *    ★ 总规划不是主笔的提示词——那两千多字的画像 + 平台补丁挂在「生成正文」那一格上，
+ *    点那一格才切过去；每一格留的也只是本步专属的那段（任务/画面描述/规约/命令）。
+ * 失败/终止的 job，打开后「继续」横幅直接压在轨道卡片下面——一眼可见，从断点续跑。
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { mediaJob, type MediaJob, type MediaJobStep, type MediaJobPlan } from "../../tauri";
@@ -73,6 +72,18 @@ const selectedStep = computed<MediaJobStep | null>(() => {
 function pickStep(s: MediaJobStep) {
   pickedKey.value = s.key;
   mid.value = "prompt";
+}
+
+/**
+ * 轨道格脚注：优先写「谁跑的」，没有专家的那几格（守卫、排版、投递这些本地动作）
+ * 退而写「留的是什么」——「校验规约」「执行命令」。否则脚注一片空白，看着像
+ * 这一格什么都没发生，而它其实有内容可点。
+ */
+function stepTag(s: MediaJobStep): string {
+  if (s.expertName) return s.expertName;
+  const cap = s.promptLabel ?? "";
+  const i = cap.indexOf("（");
+  return i > 0 ? cap.slice(0, i) : cap;
 }
 
 /* 轨道横着排，跑到后面几格时选中的那格会滑出视野——自动把它带回来。 */
@@ -166,9 +177,9 @@ function segs(s: string): Seg[] {
 const mid = ref<"plan" | "prompt" | "article">("plan");
 
 /**
- * 总规划提示词：整篇文章的总纲——写作专家画像 + 本平台补丁 + insight 卡 + 写作任务 + 品牌契约。
- * 后端一并管两种来源：generate 跑过就回放当时的原文快照，还没跑到就按当前配置现拼预览，
- * 所以排队中的 job 打开也有东西看，不用干等某一步留痕。
+ * 总规划：**这篇文章的思路**——主笔动笔前自拟的「做什么内容 / 给什么感觉 / 用什么写法」，
+ * 加上这稿要过的专家阵容与本篇基本盘。主笔那份画像 + 平台补丁不在这里，它挂在
+ * 「生成正文」那一格上。思路还没想出来时后端给占位说明，阵容与基本盘照常可看。
  */
 const plan = ref<MediaJobPlan | null>(null);
 const planErr = ref("");
@@ -290,14 +301,13 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 <template>
   <div class="gd-mask" @click.self="emit('close')">
     <div class="gd gd-wide">
-      <!-- ══ 顶条：标题 + 操作（失败/中断时「继续」就在这儿） ══ -->
+      <!-- ══ 顶条：标题 + 操作（「继续」不在这儿——它是横幅，压在轨道卡片下面） ══ -->
       <div class="gd-h">
         <template v-if="job">
           <span class="sline hstat"><span class="sdot" :class="STATUS_DOT[job.status] || 'idle'"></span>{{ STATUS_TEXT[job.status] || job.status }}</span>
           <b class="htitle">《{{ job.title }}》</b>
           <span class="hsub">{{ platName }}</span>
           <span class="hsp"></span>
-          <button v-if="canResume" class="btn sm hgo" :disabled="busy" @click="resume" title="从断点续跑：已完成且产物还在的阶段自动跳过">继续</button>
           <button v-if="isLive" class="btn sm danger" :disabled="busy" @click="cancel">取消</button>
           <button v-if="!isLive" class="btn sm ghost" :disabled="busy" @click="rerun">重跑</button>
         </template>
@@ -305,83 +315,92 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
         <button class="xbtn" title="关闭" @click="emit('close')">✕</button>
       </div>
 
-      <!-- ══ 工作流轨道：整条流水线横着铺在卡片最上面，点哪一格下面就换哪一格的提示词 ══ -->
-      <div class="gd-flow" v-if="job">
-        <div class="gd-meta">
-          <span>编号 <b class="mono">{{ job.id.slice(0, 8) }}</b></span>
-          <span v-if="job.topic" class="mtopic">选题 <b>{{ job.topic }}</b></span>
-          <span>发起 <b>{{ fmtTime(job.createdAt) }}</b></span>
-          <span>更新 <b>{{ fmtTime(job.updatedAt) }}</b></span>
-          <span v-if="isLive" class="live">实时</span>
-          <span class="hsp"></span>
-          <button v-if="job.articlePath" class="lnk" @click="openArticle">正文产物</button>
-          <button v-if="job.articlePath" class="lnk" @click="copyText(job.articlePath)">产物路径</button>
-          <button class="lnk" @click="copyText(job.logPath)">日志路径</button>
-        </div>
-
-        <div ref="railEl" class="rail">
-          <!-- 总规划钉在轨道最前面：它管的是整篇文章，不属于任何一格步骤 -->
-          <button class="wfn plan" :class="{ on: mid === 'plan' }" @click="mid = 'plan'">
-            <span class="wfn-h">
-              <span class="sdot" :class="plan?.recorded ? 'ok' : 'idle'"></span>
-              <span class="wfn-i">总纲</span>
-            </span>
-            <span class="wfn-l">总规划提示词</span>
-            <span class="wfn-m">
-              整篇怎么写
-              <template v-if="plan?.expertName"> · {{ plan.expertName }}</template>
-              <template v-if="plan?.prompt"> · {{ plan.prompt.length }} 字</template>
-            </span>
-          </button>
-
-          <p v-if="!job.steps.length" class="rail-hint">
-            还没有步骤记录{{ job.status === "pending" ? "，排队等待开跑。" : "。" }}
-          </p>
-          <template v-for="(s, i) in job.steps" :key="s.key">
-            <span class="arr" :class="s.status"></span>
-            <button
-              class="wfn"
-              :class="[s.status, { on: mid === 'prompt' && selectedStep?.key === s.key }]"
-              :title="s.label"
-              @click="pickStep(s)"
-            >
-              <span class="wfn-h">
-                <span class="sdot" :class="STEP_DOT[s.status] || 'idle'"></span>
-                <span class="wfn-i">{{ i + 1 }}</span>
-                <span class="wfn-s">{{ STEP_TEXT[s.status] || s.status }}</span>
-              </span>
-              <span class="wfn-l">{{ s.label }}</span>
-              <span class="wfn-m">
-                <template v-if="fmtDur(s.durationMs)">{{ fmtDur(s.durationMs) }}</template>
-                <template v-if="s.expertName">{{ fmtDur(s.durationMs) ? " · " : "" }}{{ s.expertName }}</template>
-              </span>
-            </button>
-          </template>
-        </div>
-
-        <p v-if="job.error" class="errline">{{ job.error }}</p>
-      </div>
-
       <div class="gd-cols" v-if="job">
-        <!-- ══ 左：提示词——打开即整篇文章的总规划，点轨道某一格才切成那步的局部提示词 ══ -->
-        <div class="col-m pane">
-          <div class="mid-t">
+        <!-- ══ 左（4 成）：工作流轨道 + 提示词 ══ -->
+        <div class="col-m">
+          <!-- 工作流轨道：整条流水线铺在左栏顶上，点哪一格下面就换哪一格的提示词 -->
+          <div class="gd-flow">
+            <div class="gd-meta">
+              <span>编号 <b class="mono">{{ job.id.slice(0, 8) }}</b></span>
+              <span v-if="job.topic" class="mtopic">选题 <b>{{ job.topic }}</b></span>
+              <span>发起 <b>{{ fmtTime(job.createdAt) }}</b></span>
+              <span>更新 <b>{{ fmtTime(job.updatedAt) }}</b></span>
+              <span v-if="isLive" class="live">实时</span>
+              <span class="hsp"></span>
+              <button v-if="job.articlePath" class="lnk" @click="openArticle">正文产物</button>
+              <button v-if="job.articlePath" class="lnk" @click="copyText(job.articlePath)">产物路径</button>
+              <button class="lnk" @click="copyText(job.logPath)">日志路径</button>
+            </div>
+
+            <div ref="railEl" class="rail">
+              <!-- 总规划钉在轨道最前面：它管的是整篇文章，不属于任何一格步骤 -->
+              <button class="wfn plan" :class="{ on: mid === 'plan' }" @click="mid = 'plan'">
+                <span class="wfn-h">
+                  <span class="sdot" :class="plan?.recorded ? 'ok' : 'idle'"></span>
+                  <span class="wfn-i">总纲</span>
+                </span>
+                <span class="wfn-l">总规划</span>
+                <span class="wfn-m">
+                  本篇思路 · 专家阵容
+                  <template v-if="plan?.expertName"> · {{ plan.expertName }}</template>
+                </span>
+              </button>
+
+              <p v-if="!job.steps.length" class="rail-hint">
+                还没有步骤记录{{ job.status === "pending" ? "，排队等待开跑。" : "。" }}
+              </p>
+              <template v-for="(s, i) in job.steps" :key="s.key">
+                <span class="arr" :class="s.status"></span>
+                <button
+                  class="wfn"
+                  :class="[s.status, { on: mid === 'prompt' && selectedStep?.key === s.key }]"
+                  :title="s.label"
+                  @click="pickStep(s)"
+                >
+                  <span class="wfn-h">
+                    <span class="sdot" :class="STEP_DOT[s.status] || 'idle'"></span>
+                    <span class="wfn-i">{{ i + 1 }}</span>
+                    <span class="wfn-s">{{ STEP_TEXT[s.status] || s.status }}</span>
+                  </span>
+                  <span class="wfn-l">{{ s.label }}</span>
+                  <span class="wfn-m">
+                    <template v-if="fmtDur(s.durationMs)">{{ fmtDur(s.durationMs) }}</template>
+                    <template v-if="stepTag(s)">{{ fmtDur(s.durationMs) ? " · " : "" }}{{ stepTag(s) }}</template>
+                  </span>
+                </button>
+              </template>
+            </div>
+
+            <p v-if="job.error" class="errline">{{ job.error }}</p>
+          </div>
+
+          <!-- 被终止/失败的任务：「继续」横幅就压在轨道卡片下面，打开第一眼就看到 -->
+          <div v-if="canResume" class="resume-bar">
+            <div class="rb-t">
+              <b>{{ job.status === "failed" ? "这条流水线跑到一半失败了" : "这条流水线被终止了" }}</b>
+              <small>已完成且产物还在的阶段自动跳过，从断点接着跑</small>
+            </div>
+            <button class="rb-go" :disabled="busy" @click="resume">▶ 从断点继续</button>
+          </div>
+
+          <!-- 提示词：打开即整篇文章的总规划，点轨道某一格才切成那步的局部提示词 -->
+          <div class="pane pm">
+            <div class="mid-t">
             <template v-if="mid === 'plan'">
-              <b>总规划提示词 · 整篇文章</b>
-              <span v-if="plan?.prompt" class="mid-n">{{ plan.prompt.length }} 字</span>
+              <b>总规划 · 这篇文章的思路</b>
               <span class="mid-tag" :class="{ pre: !plan?.recorded }">
-                {{ plan?.recorded ? "已喂给模型的原文" : "按当前配置预览" }}
+                {{ plan?.recorded ? "主笔自拟的原话" : "待主笔动笔时自拟" }}
               </span>
               <span class="hsp"></span>
-              <button v-if="plan?.prompt" class="lnk" @click="copyText(plan.prompt, '总规划提示词')">复制</button>
-              <button v-if="plan?.expertId" class="lnk" @click="editPrompt(plan.expertId)">改提示词</button>
+              <button v-if="plan?.prompt" class="lnk" @click="copyText(plan.prompt, '总规划')">复制</button>
+              <button v-if="plan?.expertId" class="lnk" @click="editPrompt(plan.expertId)">改主笔画像</button>
             </template>
             <template v-else-if="mid === 'prompt'">
               <b>{{ selectedStep?.label ?? "提示词" }}</b>
               <span v-if="selectedStep?.prompt" class="mid-n">{{ selectedStep.prompt.length }} 字</span>
               <span class="hsp"></span>
               <button class="lnk" @click="mid = 'plan'">回到总规划</button>
-              <button v-if="selectedStep?.prompt" class="lnk" @click="copyText(selectedStep.prompt, '提示词')">复制</button>
+              <button v-if="selectedStep?.prompt" class="lnk" @click="copyText(selectedStep.prompt, '本步内容')">复制</button>
               <button v-if="selectedStep?.expertId" class="lnk" @click="editPrompt(selectedStep.expertId)">改提示词</button>
             </template>
             <template v-else>
@@ -389,10 +408,13 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
               <span class="hsp"></span>
               <button class="lnk" @click="mid = beforeArticle">{{ beforeArticle === "plan" ? "回到总规划" : "回到提示词" }}</button>
             </template>
-          </div>
+            </div>
 
-          <div class="mid-b">
+            <div class="mid-b">
             <template v-if="mid !== 'article'">
+              <!-- 题注：这一格留的到底是什么——喂模型的任务、画面描述，还是本地跑的规约/命令。
+                   步骤快照只收本步专属的那段，省掉的画像 + 补丁去处也由它交代。 -->
+              <p v-if="mid === 'prompt' && selectedStep?.promptLabel" class="pb-cap">{{ selectedStep.promptLabel }}</p>
               <template v-if="promptBlocks.length">
                 <template v-for="(b, i) in promptBlocks" :key="i">
                   <h4 v-if="b.t === 'head'" class="pb-h">{{ b.s.replace(/\*\*/g, "") }}</h4>
@@ -417,24 +439,25 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
               </template>
               <template v-else-if="mid === 'plan'">
                 <p v-if="planErr" class="errline">读取总规划失败：{{ planErr }}</p>
-                <p v-else-if="plan" class="hint">
-                  这条 job 不含生成阶段（直接拿现成正文排版投递），没有总规划提示词。
-                </p>
                 <p v-else class="hint"><span class="spin">◔</span> 读取总规划…</p>
               </template>
-              <p v-else-if="selectedStep" class="hint">这一步没有留下提示词（瞬时步骤，或早期版本跑的 job）。</p>
-              <p v-else class="hint">上面轨道点任意一格，这里显示喂给模型的提示词。</p>
+              <p v-else-if="selectedStep" class="hint">这一步没有留痕（脚本回执的瞬时步骤，或早期版本跑的 job）。</p>
+              <p v-else class="hint">上面轨道点任意一格，这里显示那一步真正下发的内容。</p>
             </template>
             <template v-else>
               <p v-if="articleErr" class="errline">{{ articleErr }}</p>
               <pre v-else class="art">{{ article ?? "读取中…" }}</pre>
             </template>
+            </div>
           </div>
         </div>
 
-        <!-- ══ 右：对话操控（步骤事件 + 日志 + 模型回复汇成一条流） ══ -->
+        <!-- ══ 右（6 成，从顶条底下通到底）：对话操控——步骤/后端动作/模型回复一条流 ══ -->
         <div class="col-r pane">
-          <div class="mid-t"><b>对话操控</b></div>
+          <div class="mid-t">
+            <b>对话操控</b>
+            <span class="mid-n">流水线每做完一件事发一条</span>
+          </div>
           <JobChatPanel :job="job" :log="log" :day-start="dayStart" />
         </div>
       </div>
@@ -494,14 +517,6 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 .htitle { font-size: var(--text-m); color: var(--ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hsub { font-size: var(--text-xs); color: var(--muted); white-space: nowrap; }
 .hsp { flex: 1; }
-.gd-h .hgo {
-  background: var(--accent);
-  border-color: transparent;
-  color: #fff;
-  font-size: var(--text-xs);
-  padding: 4px 14px;
-}
-.gd-h .hgo:hover { background: var(--accent-ink); }
 .gd-h .xbtn {
   width: 26px; height: 26px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -514,15 +529,17 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 }
 .gd-h .xbtn:hover { background: var(--card2); color: var(--ink); }
 
-/* ═══ 顶部工作流轨道 ═══
-   原来这条流程是左下角一列竖着的按钮：既看不出「先后」，又把卡片最好的一块地占成一条窄条。
-   现在整条流水线横着铺在顶条底下——总纲 → ① → ② → …，中间用箭头连起来，
-   一眼看得出走到哪、哪一格红了。点任意一格，下面的提示词栏跟着换。 */
+/* ═══ 工作流轨道 ═══
+   总纲 → ① → ② → …，中间用箭头连起来，一眼看得出走到哪、哪一格红了；点任意一格，
+   下面的提示词栏跟着换。它现在收在左栏顶上（右边整条留给对话），格子窄了就横向滚，
+   选中的那格自动滑回视野。 */
 .gd-flow {
   flex: none;
-  padding: 10px 16px 12px;
-  border-bottom: 1px solid var(--line);
+  padding: 10px 14px 11px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
   background: linear-gradient(180deg, var(--panel), color-mix(in srgb, var(--panel) 82%, transparent));
+  box-shadow: 0 2px 10px rgba(20, 30, 62, .05);
 }
 
 /* 基本信息收成轨道上面一行：编号/选题/时间 + 产物入口 */
@@ -551,8 +568,8 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
   /* 格子平分轨道宽度：步骤少时铺满（中文步骤名长，宽一点才不被截成「配图（读文出画面…」），
      步骤多时缩到 min-width 后整条轨道横向滚动。 */
   flex: 1 1 0;
-  min-width: 156px;
-  max-width: 300px;
+  min-width: 132px;
+  max-width: 260px;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -631,17 +648,64 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 
 .gd-flow .errline { margin: 10px 0 0; }
 
-/* ── 两栏正文：提示词（宽） + 对话操控 ── */
+/* ═══ 继续横幅 ═══
+   被终止/失败的 job 打开后，「继续」不再缩在顶条的小按钮里——一条醒目的横幅
+   直接压在轨道卡片下面：左边一句话说清发生了什么，右边一颗大按钮从断点续跑。 */
+.resume-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  border-radius: 16px;
+  background: linear-gradient(120deg,
+    color-mix(in srgb, var(--accent) 12%, var(--panel)),
+    color-mix(in srgb, var(--accent) 5%, var(--panel)));
+  box-shadow: 0 2px 10px rgba(20, 30, 62, .06);
+}
+.rb-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rb-t b { font-size: var(--text-s); font-weight: 600; color: var(--ink); }
+.rb-t small { font-size: var(--text-2xs); color: var(--muted); }
+.rb-go {
+  flex: none;
+  padding: 9px 22px;
+  border: none;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: var(--text-s);
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 35%, transparent);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.rb-go:hover:not(:disabled) { background: var(--accent-ink); }
+.rb-go:disabled { opacity: .6; cursor: default; }
+
+/* ── 两栏正文：左 4（轨道 + 提示词） / 右 6（对话，通顶到底） ──
+   对话是这张卡真正在看的东西，所以它占大头，并且从顶条底下一路通到底；
+   轨道与提示词一起收进左栏。 */
 .gd-cols {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) minmax(340px, 400px);
+  grid-template-columns: minmax(300px, 4fr) minmax(420px, 6fr);
+  /* ★ 行高必须钉成 minmax(0, 1fr)：默认的 auto 行会被内容撑高，两栏一起顶穿卡片，
+     被下面的 overflow:hidden 齐根裁掉——提示词长一点，尾巴就既看不见也滚不到。
+     钉死行高后两栏各自封顶，内部的 .mid-b / 对话流才真的能滚起来。 */
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
   padding: 14px 16px 16px;
   overflow: hidden;
 }
-.col-m, .col-r { min-width: 0; display: flex; flex-direction: column; }
+/* 同理：grid 子项默认 min-height:auto，不归零它照样撑破 */
+.col-m, .col-r { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.col-m { gap: 12px; }
+.col-m .pm { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* 轨道自己也封顶：步骤名两行 + 元信息换行时不许把下面的提示词栏挤没 */
+.col-m .gd-flow { max-height: 46%; overflow-y: auto; }
 
 .pane {
   border: 1px solid var(--line);
@@ -691,7 +755,20 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
   white-space: nowrap;
 }
 .mid-tag.pre { border-color: var(--line-2); color: var(--muted); }
-.mid-b { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 22px 22px; }
+.mid-b { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 20px; }
+
+/* 题注：这一格留的是什么（本步任务 / 画面描述 / 校验规约 / 执行命令） */
+.pb-cap {
+  margin: 0 0 12px;
+  padding: 5px 10px;
+  border-radius: 9px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  font-size: var(--text-2xs);
+  line-height: 1.6;
+  color: var(--muted);
+  word-break: break-word;
+}
 
 .pb-h {
   font-size: var(--text-m);
@@ -702,7 +779,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
   border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
   line-height: 1.5;
 }
-.pb-h:first-child { margin-top: 0; }
+.pb-h:first-child, .pb-cap + .pb-h { margin-top: 0; }
 .pb-p {
   font-size: var(--text-s);
   line-height: 1.85;
@@ -757,9 +834,11 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 .gd-body { flex: 1; display: flex; align-items: center; justify-content: center; }
 
 @media (max-width: 1100px) {
-  .gd-cols { grid-template-columns: 1fr; overflow-y: auto; }
-  .col-m { min-height: 380px; }
-  .col-r { min-height: 340px; }
+  /* 窄屏堆成一列：对话排前面，轨道与提示词跟在后面。整页自己滚，行高不再封顶 */
+  .gd-cols { grid-template-columns: 1fr; grid-template-rows: none; overflow-y: auto; }
+  .col-r { order: -1; min-height: 420px; }
+  .col-m .pm { min-height: 320px; }
+  .col-m .gd-flow { max-height: none; }
   .wfn { width: 150px; }
 }
 </style>

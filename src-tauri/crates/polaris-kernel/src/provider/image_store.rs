@@ -88,8 +88,8 @@ pub const IMAGE_PRESETS: &[ImagePreset] = &[
         name: "豆包 Seedream(方舟)",
         flavor: ImageFlavor::Openai,
         endpoint: "https://ark.cn-beijing.volces.com/api/v3/images/generations",
-        model: "doubao-seedream-4-0-250828",
-        note: "火山方舟;说 OpenAI 形状,模型名需在方舟控制台确认",
+        model: "doubao-seedream-5-0-260128",
+        note: "火山方舟 Seedream 5.0;说 OpenAI 形状,模型名需在方舟控制台确认(id 只有连字符,没有点)",
     },
 ];
 

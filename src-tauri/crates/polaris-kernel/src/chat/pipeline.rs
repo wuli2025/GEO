@@ -247,21 +247,26 @@ fn chat_send_pipeline(app: &AppHandle, req_id: &str, args: ChatSendArgs) -> Resu
     // ①禁用哪些冗余工具 ②注入哪些约定(可运行项目/长任务仅工作模式)③KB 召回快档 vs 全质量
     // ④上下文预算 ⑤权限/模型默认(前端)。
     let work_full = args.work_mode.as_deref() == Some("work");
-    // 快速模式强制调用知识库(这是该模式的本职「快速调用知识库」)——即便前端没开 KB 开关;
-    // 工作模式(纯 Claude Code)则尊重用户的 use_kb 开关, 默认不注入 KB。
-    let kb_recall = (args.use_kb || !work_full) && !creative;
+    // 知识库按开关走: 开了 KB 才做强制召回与 KB-First 取证。
+    //
+    // 此前是「非 work 模式恒真」——GEO 里所有对话都传 work_mode="office", 于是每一轮都被
+    // 强灌一整套 KB-First(约 900 tokens: 必须先 4 步取证再作答、命中必须脚注溯源、
+    // 查不到要声明资料不足)。GEO 的助手干的是排期/选题/看板这类运营活, 库里本来也没有
+    // 对应词条 —— 那套取证纪律在这里不是保障, 是干扰: 它让模型为一句「帮我排下周的稿」
+    // 先去 Glob 一遍空库, 再给运营答复挂脚注。开关关着就只留安全条款。
+    let kb_recall = args.use_kb && !creative;
 
     // 0. KB 顶层指令 (写死, 优先级最高)
-    // 普通对话 = KB-First 全量: 知识库是真相源, 必须先 4 步取证再作答、脚注溯源。
-    // 创作模式 = 精简版: 只保留「数据/指令隔离」安全条款(提示词注入防线, 不随模式豁免),
-    // 知识库按需自取 —— 做 PPT/网页/视频时素材已在 prompt 里, 强制取证只会稀释创作注意力。
+    // 开了 KB = KB-First 全量: 知识库是真相源, 必须先 4 步取证再作答、脚注溯源。
+    // 没开 / 创作模式 = 精简版: 只保留「数据/指令隔离」安全条款(提示词注入防线, 任何模式
+    // 都不豁免), 知识库按需自取。
     // 这条指令在 prompt 最前面, 离用户问题最远——但因 Claude 的"system 指令优先"特性,
     // 它仍然约束着整轮回复。配合 `claude_md::render_for_project` 注入的结构化 wiki,
     // 模型就能沿 Read/Glob/Grep + [[双链]] 自主取证。
-    if creative {
-        final_prompt.push_str(&kb_isolation_directive_light());
-    } else {
+    if kb_recall {
         final_prompt.push_str(&kb_first_directive());
+    } else {
+        final_prompt.push_str(&kb_isolation_directive_light());
     }
     final_prompt.push_str("\n\n---\n\n");
 
@@ -442,9 +447,10 @@ fn chat_send_pipeline(app: &AppHandle, req_id: &str, args: ChatSendArgs) -> Resu
     // fable::status(), 现在共用同一份结果。
     let fable_st = super::bridges::kb_bridge().and_then(|b| b.fable_status());
 
-    // 3.15 知识库家底概览(始终注入, 便宜): 让模型一开口就答得清「你的库在哪 / 有什么」,
-    //      报全四层(妈妈库 wiki / raw / output / memory)家底, 不再只会复述 wiki 结构。
-    {
+    // 3.15 知识库家底概览: 让模型一开口就答得清「你的库在哪 / 有什么」, 报全四层
+    //      (妈妈库 wiki / raw / output / memory)家底。与 KB 开关同进退 —— 不查库的那一轮
+    //      报家底只是无关上下文。
+    if kb_recall {
         let ov = kb_overview_block(fable_st.as_ref());
         if !ov.is_empty() {
             final_prompt.push_str(&ov);

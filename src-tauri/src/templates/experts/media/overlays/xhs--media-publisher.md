@@ -1,1 +1,0 @@
-**小红书 · 投递**：登录态 `%LOCALAPPDATA%\Google\Chrome\XiaohongshuProfiles\default`，未登录转账号管家扫码。复用 post-to-xhs：开 creator.xiaohongshu.com/publish → 先传图（封面 3:4 + 内页）→ 填标题（≤20 字）/分条正文/话题 → 「保存」为草稿返回 draft_uploaded。铁律：绝不点「发布笔记」；正文不含外链/微信号/二维码。失败降级：开发布页 + 正文进剪贴板，返回 manual_assist。

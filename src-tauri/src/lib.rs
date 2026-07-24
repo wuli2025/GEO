@@ -290,6 +290,9 @@ pub fn run() {
             mediaops::mediaops_schedule_tick,
             mediaops::mediaops_metric_add,
             mediaops::mediaops_metrics_summary,
+            // 平台后台数据爬虫（metrics_crawler.py 桥）：看板「阅读/点击」「热力表」的真数据源
+            mediaops::mediaops_crawl_snapshots,
+            mediaops::mediaops_crawl_run,
             // 推广植入（GEO 品牌织入）：brand.json 档案 + 分平台强度 + 硬广守卫
             brand::brand_profile_get,
             brand::brand_profile_set,
@@ -298,6 +301,7 @@ pub fn run() {
             brand::brand_tactics,
             brand::brand_doc_list,
             brand::brand_doc_save,
+            brand::brand_doc_import,
             brand::brand_doc_delete,
             brand::brand_doc_read,
             brand::brand_paths,

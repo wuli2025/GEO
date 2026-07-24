@@ -6,17 +6,22 @@
  *   选中谁，就等于对助手说「接下来聊的是它」——上下文注进提示词、生成记录也只看它。
  *   范围也可以在对话里改口（「发一篇知乎的」→ 自动切到知乎），或跟着门户导航自动跟随。
  * - 输入框长在自己身上（那块玻璃），底部原来那条常驻输入坞已经撤掉。
- * - 输入框上方是**推荐**：点一下要么直接开跑（选题 / 发一篇），
- *   要么把一句写好的短提示填进输入框，人改两个字再发。
- * - 记录流 = 对话消息 + 壳层记录（跳转/排产/告警）+ media_job 生成记录，按时间汇成一条。
- *   行里**不显示时间**；「它现在在干什么」看贴在输入框上方那个虚化小框。
+ * - 范围条底下一排是**推荐**：点一下要么直接开跑（选题 / 发一篇），要么把一句写好的
+ *   短提示填进输入框。它钉在顶上而不是浮在输入框上方——那块地留给对话，说话的地方越大越好。
+ * - 记录流 = 对话消息 + 壳层记录（跳转/排产/告警），按时间汇成一条。
+ *   **生成记录（media_job）不进这条流**：那是看板泳道的活，重复摆一遍只会把对话挤没；
+ *   在跑的那条仍由输入框上方的「它在干什么」小框交代，点进流程详情看全貌。
+ *   行里**不显示时间**。
+ * - **整块板子都能拖入文件**：落进本会话的 uploads 目录，路径随下一条消息注进提示词，
+ *   模型自己 Read。桌面端拿不到 HTML5 的 dataTransfer，这条路统一走 useFileDrop。
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, useTemplateRef } from "vue";
 import {
   chat, convApi, listen, mediaJob, mediaOps, MEDIA_PLATFORMS,
-  type Message, type ChatStreamEvent, type MediaJob, type MediaPlatform,
+  type Message, type ChatStreamEvent, type MediaJob, type MediaPlatform, type AttachedFile,
 } from "../../tauri";
 import { toast } from "../../composables/useToast";
+import { useFileDrop, type DropPayload } from "../../composables/useFileDrop";
 import { planRequest, clearPlan, requestPlan, type PlanRequest } from "./planBus";
 import { openJobDetail } from "./jobsBus";
 import { pico, P, PLATFORMS } from "./data";
@@ -113,25 +118,12 @@ const runningBy = computed(() => {
   }
   return m;
 });
-function jobDot(j: MediaJob): string {
-  if (j.status === "running" || j.status === "pending") return "run";
-  if (j.status === "done") return "ok";
-  if (j.status === "failed") return "bad";
-  return "idle";
-}
-function jobTail(j: MediaJob): string {
-  const last = j.steps?.[j.steps.length - 1];
-  const name = P(j.platform)?.name ?? j.platform;
-  if (j.status === "failed" && j.error) return `${name} · ${j.error.slice(0, 70)}`;
-  if (last) return `${name} · ${last.label}${last.status === "fail" ? "（失败）" : ""}`;
-  return `${name} · ${j.stage || j.status}`;
-}
-
-/* ── 时间轴汇流：对话消息 + 壳层记录 + 生成记录 ───────────────────── */
+/* ── 时间轴汇流：对话消息 + 壳层记录 ─────────────────────────────────
+   生成记录不在这里：job 卡片在看板泳道里已经有一份，助手这块板再摆一遍，
+   对话就被挤成一条缝了。这里只留人和模型的来回。                        */
 type Row =
   | { k: "msg"; id: string; ts: number; role: string; text: string }
-  | { k: "rec"; id: string; ts: number; kind: string; text: string }
-  | { k: "job"; id: string; ts: number; job: MediaJob };
+  | { k: "rec"; id: string; ts: number; kind: string; text: string };
 
 /**
  * 用户消息的显示文本：把系统注入的部分剥掉，只留人真说的那句。
@@ -159,10 +151,7 @@ const rows = computed<Row[]>(() => {
   for (const r of records.value) {
     out.push({ k: "rec", id: r.id, ts: r.ts, kind: r.kind, text: r.text });
   }
-  for (const j of scopeJobs.value) {
-    out.push({ k: "job", id: `j-${j.id}`, ts: j.createdAt, job: j });
-  }
-  return out.sort((a, b) => a.ts - b.ts || (a.k === "job" ? 1 : 0) - (b.k === "job" ? 1 : 0));
+  return out.sort((a, b) => a.ts - b.ts);
 });
 
 /* ── 选题规划预览 ─────────────────────────────────────────────────── */
@@ -271,8 +260,8 @@ async function scrollBottom() {
   if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight;
 }
 
-/** 注进提示词的上下文：此刻控制着谁、人站在哪。 */
-function ctxBlock(): string {
+/** 注进提示词的上下文：此刻控制着谁、人站在哪、这条带了什么附件。 */
+function ctxBlock(files: AttachedFile[] = []): string {
   const p = scopeMeta.value;
   return [
     "【上下文 · 系统自动注入，无需向用户复述】",
@@ -283,8 +272,44 @@ function ctxBlock(): string {
     p ? `平台档案：适配=${p.adapterText}；发送方式=${p.sendMode === "auto" ? "AI 直传草稿箱" : "手动辅助"}；文风=${p.style}` : "",
     p ? `红线：${p.redline}` : "",
     `打开的界面：${props.viewLabel}${props.viewCtx ? `（${props.viewCtx}）` : ""}`,
+    // 附件只给路径，不塞正文——几十兆的资料塞进提示词是自找截断，让它按需 Read
+    ...(files.length
+      ? ["本条附件（已存在本机，用 Read 工具按需读取）：",
+         ...files.map((f) => `- ${f.name}（${f.kind}）：${f.path}`)]
+      : []),
     "────",
   ].filter(Boolean).join("\n");
+}
+
+/* ── 拖入上传：整块板子都收，落进本会话的 uploads 目录 ───────────────
+   桌面端 HTML5 的 drop 拿不到文件本体（webview 截走了原生拖放），
+   统一走 useFileDrop：出口是一串绝对路径，交给 chat_attach_files 复制归档。 */
+const asEl = ref<HTMLElement | null>(null);
+const attached = ref<AttachedFile[]>([]);
+const attaching = ref(false);
+
+async function takeFiles(p: DropPayload) {
+  if (!p.paths.length) {
+    if (p.files.length) toast.error("这个形态下拿不到文件路径——请在桌面应用或已连后端的浏览器里拖");
+    return;
+  }
+  attaching.value = true;
+  try {
+    const id = await ensureConv(); // 附件要归到具体会话名下，先把会话备好
+    const rows = await chat.attachFiles(id, p.paths);
+    for (const r of rows.filter((x) => !x.ok)) toast.error(`「${r.name}」没收下：${r.error ?? "未知原因"}`);
+    const ok = rows.filter((x) => x.ok);
+    attached.value.push(...ok);
+    if (ok.length) pushRecord("sys", `已收下附件：${ok.map((f) => f.name).join("、")}——下一条消息会带上它们`);
+  } catch (e: any) {
+    toast.error(e?.message ?? String(e));
+  } finally {
+    attaching.value = false;
+  }
+}
+const { over: dropOver } = useFileDrop(asEl, takeFiles, { disabled: attaching });
+function dropAttach(i: number) {
+  attached.value.splice(i, 1); // 只从「这条消息带哪些」里摘掉，文件仍在 uploads 目录
 }
 
 /* ── 选题规划预览 ─────────────────────────────────────────────────── */
@@ -360,7 +385,8 @@ async function approvePlan() {
   const req = planRequest.value;
   p.phase = "starting";
   try {
-    const r = req?.id === p.reqId ? await req.onApprove() : undefined;
+    // 把人刚过目的这份规划透传下去，引擎按它落笔（不再另拟一份）。
+    const r = req?.id === p.reqId ? await req.onApprove(p.text.trim()) : undefined;
     p.jobId = r?.jobId;
     p.phase = "started";
     pushRecord("sys", `已开始跑流水线${r?.jobId ? `（job ${r.jobId.slice(0, 8)}）` : ""}`);
@@ -389,21 +415,25 @@ async function ask(text: string, echo?: string) {
   }
   sending.value = true;
   streamText.value = ""; streamTool.value = "";
+  // 这条带走当前挂着的附件；发出去才清空，发失败还留在原地可重发
+  const files = attached.value.slice();
+  const note = files.length ? `\n\n（附件：${files.map((f) => f.name).join("、")}）` : "";
   try {
     const id = await ensureConv();
     // 任何在途历史读取都不得覆盖这条刚发送的本地消息。
     historyLoadSeq += 1;
     msgs.value.push({
       id: `local-${Date.now()}`, conversationId: id,
-      role: "user", content: echo ?? text, createdAt: Math.floor(Date.now() / 1000),
+      role: "user", content: `${echo ?? text}${note}`, createdAt: Math.floor(Date.now() / 1000),
     });
     scrollBottom();
     reqId = await chat.send({
-      prompt: `${ctxBlock()}\n${text}`,
+      prompt: `${ctxBlock(files)}\n${text}${note}`,
       permissionMode: "auto_current",
       conversationId: id,
       workMode: "office",
     });
+    attached.value = attached.value.filter((a) => !files.includes(a));
   } catch (e: any) {
     sending.value = false;
     toast.error(e?.message ?? String(e));
@@ -412,14 +442,14 @@ async function ask(text: string, echo?: string) {
   }
 }
 
-async function startJob(platform: MediaPlatform, title: string, topic?: string): Promise<{ jobId: string }> {
+async function startJob(platform: MediaPlatform, title: string, topic?: string, plan?: string): Promise<{ jobId: string }> {
   // 先入规划队列，再启流水线——这样门户的「规划队列」里也看得见这条，不是野生 job
   try {
     const q = await mediaOps.queueAdd(platform, title);
-    const j = await mediaJob.start({ queueId: q.id, topic });
+    const j = await mediaJob.start({ queueId: q.id, topic, plan });
     return { jobId: j.id };
   } catch {
-    const j = await mediaJob.start({ platform, title, topic });
+    const j = await mediaJob.start({ platform, title, topic, plan });
     return { jobId: j.id };
   }
 }
@@ -449,8 +479,8 @@ function doProduce(p: Parsed, text: string) {
       platformName: pf?.name ?? plat,
       title: p.title,
       angle: text,
-      onApprove: async () => {
-        const r = await startJob(plat as MediaPlatform, p.title!, text);
+      onApprove: async (plan: string) => {
+        const r = await startJob(plat as MediaPlatform, p.title!, text, plan);
         toast.success(`已排产并启动流水线（job ${r.jobId.slice(0, 8)}）`);
         return r;
       },
@@ -589,7 +619,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <aside class="as">
+  <aside ref="asEl" class="as" :class="{ drop: dropOver }">
     <!-- 控制范围：横着滑，选谁就等于对助手说「接下来聊它」 -->
     <div class="as-top">
       <div class="as-scope">
@@ -612,35 +642,34 @@ onBeforeUnmount(() => {
       <button class="as-fold" title="收起助手" @click="emit('close')">›</button>
     </div>
 
+    <!-- 推荐：钉在范围条底下，不再浮在输入框上方——下面那块地整片留给对话 -->
+    <div class="as-quick">
+      <button
+        v-for="r in recs" :key="r.label"
+        class="as-rec" :class="{ go: r.fire }" :disabled="busy" :title="r.text"
+        @click="useRec(r)"
+      >{{ r.label }}</button>
+    </div>
+
     <!-- 记录流：对话 + 系统记录 + 生成记录 -->
     <div ref="listEl" class="as-body" :style="{ paddingBottom: `${dockH + 14}px` }">
       <p v-if="!rows.length && !sending && !plan" class="as-empty">
         <template v-if="scopeMeta">这里只聊「{{ scopeMeta.name }}」。</template>
         <template v-else>控制范围是「全部平台」。</template><br />
-        说一句，或点下面的推荐开始。
+        说一句，或点上面那排推荐开始。
       </p>
 
       <template v-for="r in rows" :key="r.id">
         <div v-if="r.k === 'msg'" class="as-line" :class="r.role">
-          <span class="as-gut">{{ r.role === "user" ? "›" : "‹" }}</span>
           <div class="as-txt">{{ r.text }}</div>
         </div>
-        <div v-else-if="r.k === 'rec'" class="as-line rec" :class="r.kind">
-          <span class="as-gut">{{ r.kind === "warn" ? "!" : "·" }}</span>
+        <div v-else class="as-line rec" :class="r.kind">
           <div class="as-txt">{{ r.text }}</div>
         </div>
-        <button v-else class="as-job" :class="jobDot(r.job)" @click="openJobDetail(r.job.id)">
-          <span class="as-gut"><span class="as-jdot" :class="jobDot(r.job)"></span></span>
-          <span class="as-jbody">
-            <b>《{{ r.job.title || "未命名" }}》</b>
-            <span class="as-jmeta">{{ jobTail(r.job) }}</span>
-          </span>
-        </button>
       </template>
 
       <!-- 流式中 -->
       <div v-if="sending" class="as-line assistant">
-        <span class="as-gut">‹</span>
         <div class="as-txt">
           <template v-if="streamText">{{ streamText }}<span class="as-caret"></span></template>
           <span v-else class="as-shine">正在思考</span>
@@ -649,7 +678,10 @@ onBeforeUnmount(() => {
 
       <!-- 选题规划预览卡 -->
       <div v-if="plan" class="as-plan">
-        <div class="as-plan-h">撰写规划 ·《{{ plan.title }}》</div>
+        <div class="as-plan-h">
+          <span class="as-plan-tag">撰写规划</span>
+          <span class="as-plan-t">《{{ plan.title }}》</span>
+        </div>
         <div class="as-plan-body">
           <template v-if="plan.text">{{ plan.text }}</template>
           <span v-else-if="plan.phase === 'gen'" class="as-shine">正在规划这篇怎么写</span>
@@ -690,11 +722,13 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <!-- 推荐：点了要么直接开跑，要么把话填进输入框 -->
-      <div v-if="!draft.trim() && !busy" class="as-recs">
-        <button v-for="r in recs" :key="r.label" class="as-rec" :class="{ go: r.fire }" :title="r.text" @click="useRec(r)">
-          {{ r.label }}
-        </button>
+      <!-- 挂着的附件：跟着下一条消息一起走 -->
+      <div v-if="attached.length || attaching" class="as-atts">
+        <span v-if="attaching" class="as-att">收下文件中…</span>
+        <button
+          v-for="(a, i) in attached" :key="a.path" class="as-att"
+          :title="`${a.path}（点击取消携带）`" @click="dropAttach(i)"
+        >📎 {{ a.name }} ✕</button>
       </div>
 
       <div class="as-row">
@@ -711,6 +745,9 @@ onBeforeUnmount(() => {
         <button v-else class="as-send" :disabled="!draft.trim()" title="发送（Enter）" @click="submit()">↑</button>
       </div>
     </div>
+
+    <!-- 拖着文件悬在板子上时的整块提示 -->
+    <div v-if="dropOver" class="as-drop">松手，把文件交给助手</div>
   </aside>
 </template>
 
@@ -724,10 +761,14 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid var(--line);
-  background: var(--panel);
-  box-shadow: 0 12px 32px rgba(28, 40, 80, .10);
+  /* 极浅的顶部受光：纯平白板 → 有一点体积感，但看不出「加了渐变」 */
+  background: linear-gradient(180deg, #fff 0%, #fdfdfe 56%, #fafbfd 100%);
+  box-shadow:
+    0 1px 2px rgba(28, 40, 80, .04),
+    0 10px 28px rgba(28, 40, 80, .09),
+    0 28px 60px rgba(28, 40, 80, .07);
   overflow: hidden;
 }
 
@@ -737,8 +778,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 8px;
-  border-bottom: 1px solid var(--line);
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--rule);
 }
 .as-scope {
   flex: 1;
@@ -770,7 +811,8 @@ onBeforeUnmount(() => {
   transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 .as-s:hover { background: var(--card2); color: var(--ink2); }
-.as-s.on { color: var(--ink); font-weight: 600; background: var(--card2); }
+/* 选中态换成 accent 语义：一眼看出「现在控制的是它」，比灰底更立得住 */
+.as-s.on { color: var(--accent-ink); font-weight: 600; background: var(--accent-soft); }
 .as-ic { display: inline-flex; }
 /* 没选中的平台徽标去色：十一枚彩色小方块并排就是一排噪点 */
 .as-ic :deep(.pi) {
@@ -823,27 +865,30 @@ onBeforeUnmount(() => {
 .as-body::before { content: ""; flex: 1 1 0%; }
 .as-empty { margin: 0 8px 10px; color: var(--muted); font-size: var(--text-s); line-height: 1.9; }
 
-.as-line {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  padding: 5px 8px;
-  border-radius: 8px;
+.as-line { display: flex; padding: 3px 2px; }
+.as-txt { min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--ink2); }
+/* 人说的话 → 右对齐的渐变蓝气泡：一屏之内谁在说话零成本分辨 */
+.as-line.user { justify-content: flex-end; padding: 5px 2px; }
+.as-line.user .as-txt {
+  max-width: 86%;
+  padding: 7px 14px;
+  border-radius: 16px 16px 5px 16px;
+  background: linear-gradient(160deg, #5b7cfa 0%, var(--accent) 80%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(66, 99, 235, .22), inset 0 1px 0 rgba(255, 255, 255, .2);
 }
-.as-gut {
-  font-size: var(--text-xs);
-  color: var(--line-2);
-  line-height: 1.85;
-  text-align: center;
-  user-select: none;
+/* 助手的话 → 不装框，正文直接排在板上（阅读面积最大） */
+.as-line.assistant .as-txt { padding: 2px; }
+/* 壳层记录 → 居中一行小注，像时间轴上的旁白 */
+.as-line.rec { justify-content: center; padding: 2px 8px; }
+.as-line.rec .as-txt { max-width: 92%; text-align: center; color: var(--muted); font-size: var(--text-2xs); }
+.as-line.rec.warn .as-txt {
+  text-align: left;
+  color: var(--tag-bad-ink);
+  background: var(--tag-bad-bg);
+  padding: 3px 12px;
+  border-radius: 12px;
 }
-.as-txt { white-space: pre-wrap; word-break: break-word; color: var(--ink2); }
-.as-line.user { background: var(--card2); }
-.as-line.user .as-gut { color: var(--accent); }
-.as-line.user .as-txt { color: var(--ink); }
-.as-line.rec .as-txt { color: var(--muted); font-size: var(--text-xs); }
-.as-line.rec.warn .as-gut, .as-line.rec.warn .as-txt { color: var(--tag-bad-ink); }
 .as-quiet { color: var(--muted); }
 
 /* 跑着的时候：文字自己在流光，不用另开一圈转菊花 */
@@ -867,65 +912,35 @@ onBeforeUnmount(() => {
 }
 @keyframes asblink { to { opacity: 0; } }
 
-/* 生成记录行 */
-.as-job {
-  position: relative;
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  width: 100%;
-  text-align: left;
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--card);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: var(--text-s);
-  color: var(--ink2);
-  overflow: hidden;
-  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
-}
-.as-job:hover { background: var(--card2); border-color: var(--line-2); }
-.as-jbody { display: flex; flex-direction: column; min-width: 0; }
-.as-jbody b { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.as-jmeta { font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.as-jdot {
-  width: 8px; height: 8px; margin-top: 7px;
-  border-radius: 50%; display: inline-block;
-  background: var(--line-2);
-}
-.as-jdot.ok { background: var(--muted); }
-.as-jdot.bad { background: var(--bad); }
-.as-jdot.run { background: var(--accent); animation: aspulse 1.6s ease-out infinite; }
-@keyframes aspulse {
-  0% { box-shadow: 0 0 0 0 rgba(66, 99, 235, .38); }
-  70%, 100% { box-shadow: 0 0 0 6px rgba(66, 99, 235, 0); }
-}
-/* 在跑的那条底下有一道扫过去的光 */
-.as-job.run::after {
-  content: "";
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  background-size: 42% 100%;
-  background-repeat: no-repeat;
-  opacity: .8;
-  animation: assweep 1.8s ease-in-out infinite;
-}
-@keyframes assweep { from { background-position: -45% 0; } to { background-position: 145% 0; } }
-
-/* 规划卡 */
+/* 规划卡：这是流里唯一要人「拍板」的东西，让它比别的行都浮起半档 */
 .as-plan {
   margin: 8px 2px 2px;
   border: 1px solid var(--line);
-  background: var(--card2);
-  border-radius: 12px;
+  background: var(--card);
+  border-radius: 14px;
   padding: 12px 14px;
+  box-shadow: var(--shadow-1);
 }
-.as-plan-h { font-size: var(--text-s); font-weight: 600; color: var(--ink); margin-bottom: 7px; }
+.as-plan-h {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+.as-plan-tag {
+  flex: none;
+  padding: 1px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  line-height: 1.8;
+}
+.as-plan-t {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-s); font-weight: 600; color: var(--ink);
+}
 .as-plan-body { font-size: var(--text-s); line-height: 1.8; white-space: pre-wrap; word-break: break-word; color: var(--ink2); }
 .as-plan-act {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -999,22 +1014,72 @@ onBeforeUnmount(() => {
 }
 .as-act-s { font-size: var(--text-2xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 推荐 */
-.as-recs { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 4px 9px 0; }
+/* 附件：挂在输入框上方，点一下取消携带 */
+.as-atts { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 4px 9px 0; }
+.as-att {
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(255, 255, 255, .8);
+  background: rgba(255, 255, 255, .72);
+  color: var(--ink2);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.as-att:hover { color: var(--bad); }
+
+/* 拖拽悬停：整块板子接住，不用瞄准输入框 */
+.as.drop { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), 0 12px 32px rgba(28, 40, 80, .10); }
+.as-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--text-s);
+  pointer-events: none;
+}
+
+/* ── 推荐条：紧贴范围条底下的一排快捷动作 ──
+   横着一排、装不下就横向滚（跟上面那排范围一个手感），不换行——它是顶栏的一部分，
+   高度必须是定值，不然内容一变整块对话会跟着上下跳。 */
+.as-quick {
+  flex: none;
+  display: flex;
+  gap: 5px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--rule);
+  overflow-x: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 18px), transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 18px), transparent 100%);
+}
+.as-quick::-webkit-scrollbar { display: none; }
 .as-rec {
+  flex: none;
   padding: 3px 11px;
   border-radius: var(--radius-pill);
-  border: 1px solid rgba(255, 255, 255, .7);
-  background: rgba(255, 255, 255, .42);
+  border: 1px solid var(--line);
+  background: var(--card);
   color: var(--dim);
   font-family: inherit;
   font-size: var(--text-xs);
   line-height: 1.7;
   cursor: pointer;
   white-space: nowrap;
-  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
-.as-rec:hover { background: rgba(255, 255, 255, .9); color: var(--ink); }
+.as-rec:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+/* 跑着的时候点了也没用（ask 会挡回去），直接灰掉，别让人白点 */
+.as-rec:disabled { opacity: .45; cursor: not-allowed; }
 /* 点了直接开跑的那几枚，前面点一颗蓝点——跟「填进输入框」的区分开 */
 .as-rec.go::before {
   content: "";
@@ -1049,19 +1114,25 @@ onBeforeUnmount(() => {
   width: 36px; height: 36px;
   border-radius: 50%;
   border: 1px solid transparent;
-  background: var(--accent);
+  background: linear-gradient(180deg, #5b7cfa, var(--accent));
   color: #fff;
   font-family: inherit;
   font-size: 16px;
   cursor: pointer;
-  transition: filter var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+  box-shadow: 0 3px 10px rgba(66, 99, 235, .32), inset 0 1px 0 rgba(255, 255, 255, .28);
+  transition:
+    filter var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
-.as-send:hover { filter: brightness(1.08); }
-.as-send:disabled { opacity: .3; cursor: not-allowed; }
-.as-send.stop { background: var(--bad); }
+.as-send:hover { filter: brightness(1.06); transform: translateY(-1px); box-shadow: 0 5px 14px rgba(66, 99, 235, .38), inset 0 1px 0 rgba(255, 255, 255, .28); }
+.as-send:active { transform: none; }
+.as-send:disabled { opacity: .3; cursor: not-allowed; box-shadow: none; transform: none; }
+.as-send.stop { background: linear-gradient(180deg, #e05252, var(--bad)); box-shadow: 0 3px 10px rgba(208, 59, 59, .3), inset 0 1px 0 rgba(255, 255, 255, .24); }
 
 @media (prefers-reduced-motion: reduce) {
-  .as-shine, .as-act-t, .as-dots i, .as-job.run::after, .as-jdot.run, .as-caret { animation: none; }
+  .as-shine, .as-act-t, .as-dots i, .as-caret { animation: none; }
   .as-shine, .as-act-t { color: var(--ink); background: none; -webkit-text-fill-color: currentColor; }
 }
 

@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 植入强度三档。存档/传输用小写字符串："strong" | "weak" | "zero"。
 pub const STRENGTH_STRONG: &str = "strong";
@@ -129,9 +129,13 @@ pub fn docs_dir() -> PathBuf {
 
 /// 单个资料文件的**总注入预算**（字符）。资料是给模型挑切入点的，不是让它背全文；
 /// 超出部分截断并在文本里标明，避免一份长文档把写作提示词撑爆、把平台调性挤没。
-const DOC_CHARS_PER_FILE: usize = 4000;
+///
+/// 预算基准：主笔画像 + 平台补丁合计约 1.1k 字符。原来品牌资料给到 12k 合计预算，
+/// 等于「我是谁」的分量压过「这个平台该怎么写」10 倍——注释里担心的那件事，
+/// 按那个配比本来就会发生。收到 1.5k/份、4k 合计，量级与画像同一档。
+const DOC_CHARS_PER_FILE: usize = 1500;
 /// 所有已启用资料合计预算。
-const DOC_CHARS_TOTAL: usize = 12000;
+const DOC_CHARS_TOTAL: usize = 4000;
 
 /// 文件名消毒：只留基名，挡掉 `..`、路径分隔符与空名——上传的名字不可信。
 fn safe_doc_name(name: &str) -> Option<String> {
@@ -575,6 +579,152 @@ pub fn brand_doc_save(name: String, content: String) -> Result<(), String> {
     let dir = docs_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("建资料目录失败：{e}"))?;
     std::fs::write(dir.join(&safe), content).map_err(|e| format!("写「{safe}」失败：{e}"))
+}
+
+/// 一份资料的导入结果（一个拖进来的原始文件 → 资料库里的一份文本）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandDocImport {
+    /// 落进 `brand-docs/` 后的文件名（PDF/Word/Excel 会变成 `原名.md`）。
+    pub name: String,
+    /// 原始文件名（失败时也要能告诉人是哪一份没进来）。
+    pub source: String,
+    pub chars: usize,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 单个导入文件的体积上限。抽出来的文本再长也只喂前 [`DOC_CHARS_PER_FILE`] 字，
+/// 但 PDF 解析本身吃内存，先在门口按字节挡一道。
+const DOC_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// 一次拖拽最多收几份（含文件夹展开后的）。
+const DOC_MAX_FILES: usize = 20;
+
+/// 能靠内核转换器抽出文本的二进制文档。
+fn convertible_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "pdf" | "docx" | "doc" | "xlsx" | "xls" | "xlsm" | "xlsb" | "pptx" | "ppt" | "ods" | "odt" | "odp"
+    )
+}
+
+/// 直接当纯文本读的扩展名。名单之外一律拒收——二进制读成乱码存进去，
+/// 只会在写作时把提示词喂脏。
+fn textual_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "md" | "markdown" | "txt" | "json" | "csv" | "tsv" | "yml" | "yaml" | "html" | "htm" | "xml" | "log"
+    )
+}
+
+/// 按**绝对路径**导入品牌资料（拖拽 / 文件选择都走这条）。
+///
+/// 为什么读盘挪到后端：桌面端的 HTML5 `drop` 事件拿不到文件本体——webview 把原生拖放
+/// 截走了，前端只能从 `onDragDropEvent` 拿到一串路径。既然要在后端读，就顺手用内核的
+/// 转换器把 PDF/Word/Excel 抽成 Markdown，人不必再自己「另存为 .txt」。
+///
+/// 只写文件，不碰 `brand.json` 的启用清单——那是调用方一次读-改-写的事（见前端 `persistDocs`）。
+// command(async): 20 份文件读盘 + PDF 解析是重 IO，同步命令会钉住 UI 主线程。
+#[cfg_attr(feature = "desktop", tauri::command(async))]
+pub fn brand_doc_import(paths: Vec<String>) -> Vec<BrandDocImport> {
+    // 文件夹浅层展开一层：把「资料」整个文件夹拖进来是很自然的动作。
+    let mut files: Vec<PathBuf> = Vec::new();
+    for p in &paths {
+        let src = PathBuf::from(p);
+        if src.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(&src) {
+                for e in rd.flatten() {
+                    let ep = e.path();
+                    if ep.is_file() && files.len() < DOC_MAX_FILES {
+                        files.push(ep);
+                    }
+                }
+            }
+            continue;
+        }
+        if files.len() < DOC_MAX_FILES {
+            files.push(src);
+        }
+    }
+
+    let dir = docs_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return files
+            .iter()
+            .map(|f| fail_import(f, format!("建资料目录失败：{e}")))
+            .collect();
+    }
+
+    files.iter().map(|f| import_one(&dir, f)).collect()
+}
+
+fn base_name(p: &Path) -> String {
+    p.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.to_string_lossy().to_string())
+}
+
+fn fail_import(src: &Path, error: String) -> BrandDocImport {
+    let name = base_name(src);
+    BrandDocImport {
+        source: name.clone(),
+        name,
+        chars: 0,
+        ok: false,
+        error: Some(error),
+    }
+}
+
+fn import_one(dir: &Path, src: &Path) -> BrandDocImport {
+    let source = base_name(src);
+    if !src.is_file() {
+        return fail_import(src, "文件不存在".into());
+    }
+    if let Ok(m) = std::fs::metadata(src) {
+        if m.len() > DOC_MAX_BYTES {
+            return fail_import(src, "超过 8MB —— 先裁成要点再传".into());
+        }
+    }
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 出口统一成「一份纯文本 + 一个落盘文件名」，两条来源在这里合流。
+    let (text, out_name) = if convertible_ext(&ext) {
+        let stem = src
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| source.clone());
+        match crate::convert::convert_to_markdown(src) {
+            Ok(Some(t)) => (t, format!("{stem}.md")),
+            Ok(None) => return fail_import(src, "这份文档抽不出文本（可能是扫描件）".into()),
+            Err(e) => return fail_import(src, format!("文本提取失败：{e}")),
+        }
+    } else if textual_ext(&ext) {
+        match std::fs::read_to_string(src) {
+            Ok(t) => (t, source.clone()),
+            Err(e) => return fail_import(src, format!("读不成文本（可能不是 UTF-8）：{e}")),
+        }
+    } else {
+        return fail_import(src, "不认得的格式 —— 收纯文本与 PDF/Word/Excel/PPT".into());
+    };
+
+    let Some(safe) = safe_doc_name(&out_name) else {
+        return fail_import(src, format!("文件名不合法：{out_name}"));
+    };
+    match std::fs::write(dir.join(&safe), &text) {
+        Ok(()) => BrandDocImport {
+            chars: text.chars().count(),
+            name: safe,
+            source,
+            ok: true,
+            error: None,
+        },
+        Err(e) => fail_import(src, format!("写「{safe}」失败：{e}")),
+    }
 }
 
 /// 删除一份资料，并把它从启用清单里摘掉（免得留下指向空文件的死引用）。

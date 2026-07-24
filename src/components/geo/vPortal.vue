@@ -9,7 +9,7 @@
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { portalTitleHtml, portalHeaderHtml } from "./render";
-import { P } from "./data";
+import { P, ico } from "./data";
 import {
   mediaOps, mediaAccounts, mediaJob, expertMedia, chat, listen, MEDIA_PLATFORMS,
   type MediaTopic, type MediaQueueItem, type MediaPlatformSettings, type MediaAccountStatus, type MediaPlatform, type MediaJob,
@@ -36,7 +36,6 @@ const topics = ref<MediaTopic[]>([]);
 const queue = ref<MediaQueueItem[]>([]);
 const settings = ref<MediaPlatformSettings[]>([]);
 const accts = ref<MediaAccountStatus[]>([]);
-const newTopic = ref({ title: "", angle: "", keywords: "" });
 
 async function loadState() {
   if (!isReal.value) { topics.value = []; queue.value = []; settings.value = []; return; }
@@ -75,7 +74,6 @@ onBeforeUnmount(() => {
 });
 watch(() => props.platform, () => {
   loadState(); loadJobs();
-  newTopic.value = { title: "", angle: "", keywords: "" };
   // 换平台 = 换泳道：两颗主功能的临时状态一并清掉，别把 A 平台的题带到 B 平台。
   pubOpen.value = false;
   if (dsOpen.value) dsClose();
@@ -108,17 +106,17 @@ function produceTopic(t: MediaTopic) {
     title: t.title,
     angle: t.angle || undefined,
     keywords: t.keywords && t.keywords.length ? t.keywords : undefined,
-    onApprove: () => doProduce(t),
+    onApprove: (plan) => doProduce(t, plan),
   });
 }
 
 /** 真正排产：入队 → 标记 picked → 启动全链路 job。记录落在对话框，不再自动弹抽屉。 */
-async function doProduce(t: MediaTopic): Promise<{ jobId: string }> {
+async function doProduce(t: MediaTopic, plan?: string): Promise<{ jobId: string }> {
   producing.value = t.id;
   try {
     const q = await mediaOps.queueAdd(plat.value, t.title, t.id);
     await mediaOps.topicUpdate(t.id, { status: "picked" }).catch(() => {});
-    const j = await mediaJob.start({ queueId: q.id, topic: t.angle || undefined });
+    const j = await mediaJob.start({ queueId: q.id, topic: t.angle || undefined, plan });
     toast.success(`已排产并启动流水线（job ${j.id.slice(0, 8)}）`);
     await loadState(); await loadJobs();
     return { jobId: j.id };
@@ -146,11 +144,11 @@ async function runQueueItem(q: MediaQueueItem) {
 // ══════════════════════════════════════════════════════════════
 
 /** 排产一条临时稿：先登记进队列（看板与规划队列同步可见），再启动全链路 job。 */
-async function startAdhoc(title: string, angle: string): Promise<string> {
+async function startAdhoc(title: string, angle: string, plan?: string): Promise<string> {
   const q = await mediaOps.queueAdd(plat.value, title).catch(() => null);
   const j = q
-    ? await mediaJob.start({ queueId: q.id, topic: angle || undefined })
-    : await mediaJob.start({ platform: plat.value, title, topic: angle || undefined });
+    ? await mediaJob.start({ queueId: q.id, topic: angle || undefined, plan })
+    : await mediaJob.start({ platform: plat.value, title, topic: angle || undefined, plan });
   await loadState(); await loadJobs();
   return j.id;
 }
@@ -195,7 +193,7 @@ function pubPlanFirst() {
     platformName: pname.value,
     title: t,
     angle: angle || undefined,
-    onApprove: async () => ({ jobId: await startAdhoc(t, angle) }),
+    onApprove: async (plan) => ({ jobId: await startAdhoc(t, angle, plan) }),
   });
 }
 
@@ -346,19 +344,6 @@ const sendMode = computed<"ai" | "manual">(() => {
   return P(props.platform)?.sendMode === "manual" ? "manual" : "ai";
 });
 
-async function addTopic() {
-  const t = newTopic.value.title.trim();
-  if (!t || !isReal.value) return;
-  const kws = newTopic.value.keywords.split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean);
-  try {
-    const created = await mediaOps.topicAdd(plat.value, t, newTopic.value.angle.trim(), kws, "manual");
-    topics.value = [created, ...topics.value];
-    newTopic.value = { title: "", angle: "", keywords: "" };
-    toast.success("已加入选题池");
-  } catch (e: any) {
-    toast.error(e?.message ?? String(e));
-  }
-}
 async function toggleSend() {
   if (!isReal.value) return;
   const next: "ai" | "manual" = sendMode.value === "ai" ? "manual" : "ai";
@@ -387,11 +372,7 @@ const platAcct = computed(() => accts.value.find((a) => a.platform === plat.valu
 // 后端没给（平台未接入 / 命令不可用）时用与 mediaops.rs default_workflow 一致的兜底，
 // 让门户至少能说清「这条流水线由谁站哪一格」。
 const FALLBACK_WORKFLOW: MediaWorkflowStep[] = [
-  { step: "选题", expertId: "media-strategist", skillId: "hot-topic-radar", note: "" },
-  { step: "调研", expertId: "media-researcher", skillId: "deep-research", note: "" },
   { step: "写作", expertId: "media-writer", skillId: "", note: "" },
-  { step: "质检", expertId: "media-reviewer", skillId: "", note: "" },
-  { step: "AI痕迹优化", expertId: "media-deaiflavor", skillId: "", note: "" },
   { step: "配图", expertId: "media-imagedirector", skillId: "", note: "" },
   { step: "排版", expertId: "media-typesetter", skillId: "", note: "" },
   { step: "投递", expertId: "media-publisher", skillId: "media-publisher", note: "" },
@@ -451,53 +432,57 @@ const editingExpert = ref<string | null>(null);
 </script>
 
 <template>
-  <div>
-    <!-- 门户抬头：左标题，右上角两颗主功能大按钮 -->
-    <div class="portal-hero">
-      <div class="hero-l" v-html="titleHtml"></div>
-      <div class="hero-acts">
-        <button
-          class="bigbtn pri"
-          :disabled="!isReal"
-          :title="isReal ? `给个标题就跑完 ${pname} 全链路：生成→配图→排版→投草稿箱` : '该平台尚未接入'"
-          @click="openPub()"
-        >
-          <span class="bb-ic">⚡</span>
-          <span class="bb-t">立即发一篇{{ pname }}<small>全链路一把梭 · 只投草稿箱</small></span>
-        </button>
-        <button
-          class="bigbtn"
-          :disabled="!isReal"
-          :title="isReal ? '联网深挖最近热点与对标爆文，收敛成能直接开写的题' : '该平台尚未接入'"
-          @click="dsOpen = true"
-        >
-          <span class="bb-ic">🔍</span>
-          <span class="bb-t">立即深度搜索选题<small>{{ dsPhase === "running" ? "搜索中…" : "联网深挖 · 一键入池" }}</small></span>
-        </button>
-      </div>
-    </div>
-    <div v-html="head"></div>
+  <div class="pv">
+    <!-- 门户抬头：只留标题（适配/引擎/登录态那条横幅已撤，见 render.portalHeaderHtml），
+         两颗主功能大按钮搬到流水线右侧 -->
+    <div v-html="titleHtml"></div>
+    <div v-if="head" v-html="head"></div>
 
     <!-- ══ ① 工作流 ══ -->
     <section>
-      <div class="card">
+      <div class="card wf-card">
         <h3>工作流 · {{ pname }} 流水线编排</h3>
         <p class="foot flush">
           执行面按这张编排取人：每一格由哪位专家、挂哪个技能。改专家的<b>本平台补丁</b>就是改这条流水线的产出
           —— 补丁表在下面「专家团」里，改完下一条 job 立即生效。
         </p>
-        <div class="wf-flow">
-          <template v-for="(w, i) in workflow" :key="w.step">
+        <!-- 左边编排条，右边两颗主功能大按钮 -->
+        <div class="wf-main">
+          <div class="wf-flow">
+            <template v-for="(w, i) in workflow" :key="w.step">
+              <button
+                class="wf-step"
+                :title="`${w.step}：${expertName(w.expertId)}${w.skillId ? ' · 技能 ' + w.skillId : ''}——点开改本平台补丁`"
+                @click="editingExpert = w.expertId"
+              >
+                <b>{{ w.step }}</b>
+                <small>{{ expertName(w.expertId) }}</small>
+              </button>
+              <span v-if="i < workflow.length - 1" class="arr">→</span>
+            </template>
+          </div>
+          <div class="wf-acts">
             <button
-              class="wf-step"
-              :title="`${w.step}：${expertName(w.expertId)}${w.skillId ? ' · 技能 ' + w.skillId : ''}——点开改本平台补丁`"
-              @click="editingExpert = w.expertId"
+              class="bigbtn pri"
+              :disabled="!isReal"
+              :title="isReal ? `给个标题就跑完 ${pname} 全链路：生成→配图→排版→投草稿箱` : '该平台尚未接入'"
+              @click="openPub()"
             >
-              <b>{{ w.step }}</b>
-              <small>{{ expertName(w.expertId) }}</small>
+              <span class="bb-ic" v-html="ico('launch')"></span>
+              <span class="bb-t">立即发一篇{{ pname }}<small>全链路一把梭 · 只投草稿箱</small></span>
+              <span class="bb-go" aria-hidden="true"></span>
             </button>
-            <span v-if="i < workflow.length - 1" class="arr">→</span>
-          </template>
+            <button
+              class="bigbtn"
+              :disabled="!isReal"
+              :title="isReal ? '联网深挖最近热点与对标爆文，收敛成能直接开写的题' : '该平台尚未接入'"
+              @click="dsOpen = true"
+            >
+              <span class="bb-ic" v-html="ico('dig')"></span>
+              <span class="bb-t">立即深度搜索选题<small>{{ dsPhase === "running" ? "搜索中…" : "联网深挖 · 一键入池" }}</small></span>
+              <span class="bb-go" aria-hidden="true"></span>
+            </button>
+          </div>
         </div>
         <!-- 账号与发送方式：平台级两个开关，收成一行，别再单开一页 -->
         <div class="wf-ops">
@@ -515,19 +500,6 @@ const editingExpert = ref<string | null>(null);
             <button :class="{ on: sendMode === 'manual' }" :disabled="!isReal" @click="sendMode !== 'manual' && toggleSend()">手动辅助</button>
           </div>
           <span class="foot flush">任何一步失败自动降级手动辅助；只投草稿箱，永不自动对外发布。</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- 选题快速入池：选题池就是看板第一列，加题的口留在这里 -->
-    <section v-if="isReal">
-      <div class="card">
-        <h3>加一条选题（直接进下面「选题池」）</h3>
-        <div style="display: flex; gap: 8px; flex-wrap: wrap">
-          <input v-model="newTopic.title" class="inp" style="flex: 2; min-width: 180px" placeholder="选题标题" @keydown.enter="addTopic" />
-          <input v-model="newTopic.angle" class="inp" style="flex: 1; min-width: 120px" placeholder="切入角度（可选）" />
-          <input v-model="newTopic.keywords" class="inp" style="flex: 1; min-width: 120px" placeholder="关键词，逗号分隔" />
-          <button class="btn" @click="addTopic">＋ 加入</button>
         </div>
       </div>
     </section>
@@ -588,7 +560,7 @@ const editingExpert = ref<string | null>(null);
     <div v-if="pubOpen" class="gm-mask" @click.self="pubOpen = false">
       <div class="gm">
         <div class="gm-h">
-          <span>⚡ 立即发一篇{{ pname }}</span>
+          <span class="gm-title"><i class="gm-ic" v-html="ico('launch')"></i>立即发一篇{{ pname }}</span>
           <button class="xbtn" title="关闭" @click="pubOpen = false">✕</button>
         </div>
         <div class="gm-body">
@@ -631,7 +603,7 @@ const editingExpert = ref<string | null>(null);
     <div v-if="dsOpen" class="gm-mask" @click.self="dsClose">
       <div class="gm wide">
         <div class="gm-h">
-          <span>🔍 深度搜索选题 · {{ pname }}</span>
+          <span class="gm-title"><i class="gm-ic" v-html="ico('dig')"></i>深度搜索选题 · {{ pname }}</span>
           <button class="xbtn" title="关闭" @click="dsClose">✕</button>
         </div>
         <div class="gm-body">
@@ -698,50 +670,84 @@ const editingExpert = ref<string | null>(null);
 </template>
 
 <style scoped>
-/* 门户抬头：标题与右上角主功能大按钮同排（窄屏时按钮整排落到标题下面）。
-   样式放组件里而不是 geo.css——这两颗按钮只服务门户，且 geo.css 正被别处改着。 */
-.portal-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-m);
-  flex-wrap: wrap;
-}
-.hero-l { min-width: 0; }
-.hero-acts { display: flex; gap: 10px; flex: none; flex-wrap: wrap; margin-left: auto; }
+/* 门户抬头压扁：标题下的面包屑原来留 20px，抬头信息条撤掉后这一段空白直接顶在
+   工作流上方，视觉上整页往下坠一截。 */
+.pv :deep(.vcrumb) { margin-bottom: var(--space-s); }
+.pv :deep(section) { margin-bottom: var(--space-l); }
 
+/* 两颗主功能大按钮：贴在流水线编排右侧（窄屏时整排落到编排条下面）。
+   样式放组件里而不是 geo.css——这两颗按钮只服务门户，且 geo.css 正被别处改着。
+   收敛过一轮：去掉 ⚡/🔍 两个彩色 emoji（跟整页单色描线图标不是一种语言），
+   改成图标托在一块半透明衬底上 + 右端一枚发丝箭头，重量落在排版而不是装饰上。 */
 .bigbtn {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 20px;
-  border-radius: 12px;
-  border: 1px solid var(--line-2);
+  gap: 11px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
   background: var(--card);
   color: var(--ink);
   font-family: inherit;
-  font-size: var(--text-m);
+  font-size: var(--text-s);
   font-weight: 600;
   line-height: 1.25;
   text-align: left;
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(30, 40, 80, .06), 0 6px 18px rgba(30, 40, 80, .06);
-  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+  box-shadow: 0 1px 2px rgba(28, 40, 80, .04);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.bigbtn:hover { transform: translateY(-1px); box-shadow: 0 2px 4px rgba(30, 40, 80, .08), 0 10px 26px rgba(30, 40, 80, .10); }
-.bigbtn:active { transform: none; }
-.bigbtn:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; }
+.bigbtn:hover { border-color: var(--line-2); background: var(--card2); box-shadow: 0 1px 3px rgba(28, 40, 80, .07); }
+.bigbtn:active { box-shadow: none; }
+.bigbtn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; background: var(--card); border-color: var(--line); }
 .bigbtn.pri {
-  background: linear-gradient(180deg, #5a7af0, var(--accent));
-  border-color: var(--accent);
+  /* 顶部一线内高光 + 一档深的收底色：不靠大投影撑，靠自身的光学层次 */
+  background: linear-gradient(180deg, #4f6df2 0%, var(--accent) 55%, #3856d8 100%);
+  border-color: #3856d8;
   color: #fff;
-  box-shadow: 0 2px 4px rgba(66, 99, 235, .18), 0 10px 26px rgba(66, 99, 235, .26);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 1px 2px rgba(40, 62, 160, .22), 0 6px 16px rgba(48, 74, 190, .20);
 }
-.bigbtn.pri:hover { box-shadow: 0 3px 6px rgba(66, 99, 235, .22), 0 14px 32px rgba(66, 99, 235, .32); }
-.bb-ic { font-size: 20px; line-height: 1; flex: none; }
-.bb-t { display: flex; flex-direction: column; gap: 3px; white-space: nowrap; }
-.bb-t small { font-size: var(--text-2xs); font-weight: 400; color: var(--dim); }
-.bigbtn.pri .bb-t small { color: rgba(255, 255, 255, .82); }
+.bigbtn.pri:hover {
+  background: linear-gradient(180deg, #5a77f5 0%, #4467ef 55%, #3a59df 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .26), 0 1px 3px rgba(40, 62, 160, .26), 0 8px 22px rgba(48, 74, 190, .26);
+}
+.bigbtn.pri:disabled { background: linear-gradient(180deg, #5a7af0, var(--accent)); box-shadow: none; }
+
+.bb-ic {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.bb-ic :deep(.i) { width: 15px; height: 15px; opacity: 1; }
+.bigbtn.pri .bb-ic { background: rgba(255, 255, 255, .16); color: #fff; }
+.bb-t { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+.bb-t small { font-size: var(--text-2xs); font-weight: 400; color: var(--dim); letter-spacing: .01em; }
+.bigbtn.pri .bb-t small { color: rgba(255, 255, 255, .8); }
+
+/* 右端箭头：自绘发丝雪佛龙，hover 往前挪 2px —— 唯一的动效，别的都不动 */
+.bb-go {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-right: 1.5px solid currentColor;
+  border-top: 1.5px solid currentColor;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  opacity: .32;
+  transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out);
+}
+.bigbtn:hover .bb-go { opacity: .6; transform: translateX(2px) rotate(45deg); }
+.bigbtn.pri .bb-go { opacity: .55; }
+.bigbtn.pri:hover .bb-go { opacity: .9; }
 
 /* 主功能弹窗（居中模态，抽屉留给专家提示词） */
 .gm-mask {
@@ -779,6 +785,9 @@ const editingExpert = ref<string | null>(null);
   font-weight: 600;
   color: var(--ink);
 }
+.gm-title { display: inline-flex; align-items: center; gap: 8px; }
+.gm-ic { display: inline-flex; color: var(--accent-ink); }
+.gm-ic :deep(.i) { width: 16px; height: 16px; opacity: 1; }
 .gm-body { overflow: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
 .gm-foot {
   flex: none;
@@ -790,34 +799,48 @@ const editingExpert = ref<string | null>(null);
   background: var(--panel);
 }
 
-/* 工作流编排条：一格一个环节，点开就是那位专家的本平台补丁 */
-.wf-flow { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-.wf-flow .arr { align-self: center; color: var(--muted); font-size: var(--text-xs); }
+/* 工作流编排条：一格一个环节，点开就是那位专家的本平台补丁；右侧并排两颗主功能。
+   整块压扁了一档（卡片内边距、格子高度、上下留白），好让下面的看板泳道早点露头。 */
+/* 都写成 .card.wf-card：跟 geo.css 的 .geo-ops .card 同权重会打平，靠加一节选择器赢下来 */
+.card.wf-card { padding: var(--space-s) var(--space-l); }
+.card.wf-card :deep(h3) { margin-bottom: 4px; }
+.wf-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-m);
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.wf-acts { display: flex; flex-direction: column; gap: 8px; flex: none; margin-left: auto; }
+.wf-acts .bigbtn { width: 100%; }
+.wf-flow { display: flex; align-items: stretch; gap: 7px; flex-wrap: wrap; flex: 1 1 420px; min-width: 0; }
+.wf-flow .arr { align-self: center; color: var(--muted); font-size: var(--text-s); }
 .wf-step {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 12px;
-  border-radius: 10px;
+  gap: 1px;
+  padding: 8px 13px;
+  border-radius: 9px;
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--ink);
   font-family: inherit;
   text-align: left;
+  line-height: 1.45;
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .wf-step:hover { border-color: var(--accent); transform: translateY(-1px); }
-.wf-step b { font-size: var(--text-xs); font-weight: 600; }
-.wf-step small { font-size: var(--text-2xs); color: var(--dim); }
+.wf-step b { font-size: var(--text-s); font-weight: 600; }
+.wf-step small { font-size: var(--text-xs); color: var(--dim); }
 
 .wf-ops {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin-top: 12px;
-  padding-top: 10px;
+  margin-top: 10px;
+  padding-top: 9px;
   border-top: 1px solid var(--line);
 }
 .wf-sep { width: 1px; align-self: stretch; background: var(--line); }

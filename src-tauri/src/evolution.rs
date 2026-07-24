@@ -354,8 +354,25 @@ pub fn insight_delete(id: String) -> Result<(), String> {
 /// 注入写作提示词的最大卡数：经验要有优先级，不是越多越好——多了模型抓不住重点。
 const INJECT_CAP: usize = 6;
 
+/// 卡的命中精度：专家专属 > 平台专属 > 全局。这是排序的第一关键字。
+///
+/// 只按功劳分排会退化：功劳分靠「固化时关联卡 +1」授予，实际用起来常年为 0
+/// （登记进化时未必记得挑关联卡），于是排序塌成「新卡在前」——写满 INJECT_CAP 张
+/// 之后，为某平台专门写的那张卡会被无关的全局新卡挤掉。精度优先则保证：
+/// 为这个专家/这个平台写的经验一定进得去，全局卡只填剩下的位置。
+fn scope_precision(card: &InsightCard, expert_id: &str, platform: &str) -> u8 {
+    if card.scope == expert_id {
+        2
+    } else if card.scope == platform {
+        1
+    } else {
+        0
+    }
+}
+
 /// 取应注入某专家某平台写作提示词的 insight 卡，渲染成 Markdown 经验块。
-/// 命中规则：scope 为「全局」/ 该平台 id / 该专家 id；排序：功劳分降序 → 新卡在前。
+/// 命中规则：scope 为「全局」/ 该平台 id / 该专家 id；
+/// 排序：命中精度降序 → 功劳分降序 → 新卡在前。
 /// 无命中返回空串（调用方直接拼接即可，不必判空）。这是飞轮「卡改变行为」的落地点。
 pub fn insights_for_prompt(expert_id: &str, platform: &str) -> String {
     let store = STORE.read();
@@ -368,9 +385,13 @@ pub fn insights_for_prompt(expert_id: &str, platform: &str) -> String {
         return String::new();
     }
     hits.sort_by(|a, b| {
-        b.credit
-            .partial_cmp(&a.credit)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        scope_precision(b, expert_id, platform)
+            .cmp(&scope_precision(a, expert_id, platform))
+            .then_with(|| {
+                b.credit
+                    .partial_cmp(&a.credit)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then(b.created_at.cmp(&a.created_at))
     });
     let mut out = String::from("\n\n---\n\n# 经验库（历史实测沉淀，写作时必须遵循）\n\n");
@@ -387,8 +408,14 @@ pub fn insights_for_prompt(expert_id: &str, platform: &str) -> String {
 
 // ───────────────────────── Commands: 进化时间线 ─────────────────────────
 
-/// 登记一次进化（status=观察中）。不变式⑥：一切变更先留卡再生效。
+/// 登记一次进化。不变式⑥：一切变更先留卡再生效。
+///
+/// `status` 缺省为「观察中」= 这是一个待验证的**提案**，7 天后要裁决。
+/// 但人在 UI 里直接改写并保存的补丁**已经生效了**，它不是提案——那种变更传
+/// 「已固化」，否则每保存一次就多一张永远无人裁决的观察卡，overdue 单调增长，
+/// 大屏催办很快变成必须无视的噪音。
 #[cfg_attr(feature = "desktop", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub fn evolution_add(
     kind: String,
     title: String,
@@ -398,10 +425,16 @@ pub fn evolution_add(
     expect: Option<String>,
     insight_ids: Option<Vec<String>>,
     evidence: Option<Vec<String>>,
+    status: Option<String>,
 ) -> Result<EvolutionEntry, String> {
     if !matches!(kind.as_str(), "prompt" | "skill" | "expert" | "schedule") {
         return Err(format!("未知进化类型：{kind}（合法：prompt/skill/expert/schedule）"));
     }
+    let status = status.unwrap_or_else(|| "观察中".to_string());
+    if !matches!(status.as_str(), "观察中" | "已固化" | "已回滚") {
+        return Err(format!("未知状态：{status}（合法：观察中/已固化/已回滚）"));
+    }
+    let now = now_secs();
     let entry = EvolutionEntry {
         id: gen_id(),
         kind,
@@ -411,11 +444,11 @@ pub fn evolution_add(
         proposer: proposer.unwrap_or_else(|| "human".to_string()),
         expect: expect.unwrap_or_default(),
         actual: String::new(),
-        status: "观察中".to_string(),
+        decided_at: (status != "观察中").then_some(now),
+        status,
         insight_ids: insight_ids.unwrap_or_default(),
         evidence: evidence.unwrap_or_default(),
-        created_at: now_secs(),
-        decided_at: None,
+        created_at: now,
     };
     {
         let mut store = STORE.write();

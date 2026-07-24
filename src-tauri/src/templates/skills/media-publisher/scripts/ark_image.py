@@ -15,9 +15,10 @@ base_url 兼容两种写法：
   - 已含 `/api/v3`（默认就是）→ 直接拼 `/images/generations`
   - 只到域名根 → 自动补 `/api/v3/images/generations`
 
-模型名从配置读，默认 doubao-seedream-4-5。若接口回报「模型不存在」，自动 GET /models
-捞一遍 seedream 系列名：优先挑「配置名的带版本号变体」（如 doubao-seedream-4-5 →
-doubao-seedream-4-5-251128）自动重试一次，并打印提示方便固化到 ark.json。
+模型名从配置读，默认 doubao-seedream-5-0-260128（Seedream 5.0 标准档）。方舟 id 里
+只有连字符没有点，写成 doubao-seedream-5.0-lite 会直接 404。若接口回报「模型不存在」，
+自动 GET /models 捞一遍 seedream 系列名：优先挑「配置名的带版本号变体」（如
+doubao-seedream-5-0 → doubao-seedream-5-0-260128）自动重试一次，并打印提示方便固化到 ark.json。
 
 用法：
   python ark_image.py --prompt "赛博朋克风格的游戏封面插画" --out C:\\path\\cover.png --size 1024x1024
@@ -42,7 +43,7 @@ except Exception:  # pragma: no cover
 # 可用环境变量 ARK_API_KEY 兜底。
 DEFAULT_API_KEY = os.environ.get("ARK_API_KEY", "")
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-DEFAULT_IMAGE_MODEL = "doubao-seedream-4-5"
+DEFAULT_IMAGE_MODEL = "doubao-seedream-5-0-260128"
 
 
 def _log(step, ok=True, **extra):
@@ -106,7 +107,7 @@ def _list_seedream_models(base_url, api_key):
 
 def _candidate_order(configured, names):
     """把 /models 里的 seedream 系列排成重试顺序：
-    ① 配置名的带版本号变体（doubao-seedream-4-5 → doubao-seedream-4-5-251128），新在前；
+    ① 配置名的带版本号变体（doubao-seedream-5-0 → doubao-seedream-5-0-260128），新在前；
     ② 其余 seedream，按名字倒序（版本号后缀是日期，字典序大 = 新）。
     存在但没开通（ModelNotOpen）的会挨个试下去，直到撞上账号已开通的那个。"""
     if not names:

@@ -11,7 +11,7 @@
 import { PLATFORMS, MOCK, P, ico, sdot, esc } from "./data";
 import { stackedArea, lineChart, legend } from "./charts";
 import type { EvolutionData } from "../../composables/useEvolution";
-import type { MediaKpi, MediaJob } from "../../tauri";
+import type { MediaKpi, MediaJob, MediaCrawlSnapshot } from "../../tauri";
 
 export function title(t: string, c: string): string {
   return `<h2 class="vtitle">${t}</h2><div class="vcrumb">${c}</div>`;
@@ -30,14 +30,43 @@ const kpiNum = (v: unknown, unit = ""): string =>
   nil(v) ? `<div class="num nil">—</div>` : `<div class="num">${v}${unit}</div>`;
 
 /* ── 数据看板（M8 运营大屏） ─────────────────────────────────────────── */
-export function vDashboardHtml(kpi: typeof MOCK.kpi = MOCK.kpi, jobs: MediaJob[] = []): string {
-  const k = kpi;
+
+/** 大数字压成「12.8万 / 1.2亿」——KPI 卡宽度固定，八位数会把卡撑破。 */
+const cn = (v: number): string => {
+  if (!isFinite(v)) return "—";
+  if (v >= 1e8) return (v / 1e8).toFixed(1).replace(/\.0$/, "") + "亿";
+  if (v >= 1e4) return (v / 1e4).toFixed(1).replace(/\.0$/, "") + "万";
+  return String(Math.round(v));
+};
+
+/** 抓取快照跨平台求和：只算抓到过的（ok），字段缺失按缺失处理而不是 0。 */
+const crawlSum = (snaps: MediaCrawlSnapshot[], field: string): number | null => {
+  const vals = snaps.filter((s) => s.ok).map((s) => (s.summary as any)?.[field])
+    .filter((v) => typeof v === "number");
+  return vals.length ? vals.reduce((a, b) => a + b, 0) : null;
+};
+
+export function vDashboardHtml(
+  kpi: typeof MOCK.kpi = MOCK.kpi,
+  jobs: MediaJob[] = [],
+  crawls: MediaCrawlSnapshot[] = [],
+  crawling = false,
+): string {
+  const k = { ...kpi };
+  // 「阅读 / 点击」这张卡的真数据源是平台后台抓取，不是本地度量事件——本地只知道我们
+  // 发了什么，不知道发出去之后有多少人看。抓到了就覆盖 mock 的破折号。
+  const reads = crawlSum(crawls, "reads");
+  const impressions = crawlSum(crawls, "impressions");
+  if (reads !== null) k.reads = cn(reads);
+  // 环比需要两次快照对比，只存最新一份时无从算起——空着，绝不编一个箭头出来。
   let h = title("数据看板", "总控 / 运营大屏");
   {
     h += `<section><div class="grid g5">
       <div class="card stat"><h3>近 7 天发布</h3>${kpiNum(k.pub7, "<small>篇</small>")}<div class="sub">${k.runs} 次 run · ${k.runOk} 成功</div></div>
       <div class="card stat"><h3>近 30 天发布</h3>${kpiNum(k.pub30, "<small>篇</small>")}<div class="sub">篇均 ${k.avgWords} 字</div></div>
-      <div class="card stat"><h3>阅读 / 点击</h3>${kpiNum(k.reads)}<div class="sub">${nil(k.readsMom) ? "" : `<span class="up">▲ ${k.readsMom}</span> 环比`}</div></div>
+      <div class="card stat"><h3>阅读 / 点击</h3>${kpiNum(k.reads)}<div class="sub">${
+        impressions !== null ? `${cn(impressions)} 次展现`
+          : nil(k.readsMom) ? "" : `<span class="up">▲ ${k.readsMom}</span> 环比`}</div></div>
       <div class="card stat"><h3>AI 来源占比</h3>${kpiNum(k.aiShare)}<div class="sub">${nil(k.aiBreak) ? "" : k.aiBreak}</div></div>
       <div class="card stat"><h3>单篇成本</h3>${kpiNum(k.cost)}<div class="sub"></div></div>
       <div class="card stat"><h3>30 天 token</h3>${kpiNum(k.token)}<div class="sub"></div></div>
@@ -83,7 +112,18 @@ export function vDashboardHtml(kpi: typeof MOCK.kpi = MOCK.kpi, jobs: MediaJob[]
       </div></section>`;
   }
   {
-    const cols = MOCK.heat.cols, rows = MOCK.heat.rows;
+    // 抓到真数据就用真数据（列换成爬虫实际拿得到的字段），否则退回设计稿的列。
+    // 不把「被引 / 成本」硬塞进来——那两列没有数据源，留着只会是一排 0，比空表更误导。
+    const realCols = ["展现", "阅读", "点赞", "评论", "粉丝"];
+    const realKeys = ["impressions", "reads", "likes", "comments", "fans"];
+    const okSnaps = crawls.filter((s) => s.ok);
+    const cols = okSnaps.length ? realCols : MOCK.heat.cols;
+    const rows: [string, (string | number)[]][] = okSnaps.length
+      ? okSnaps.map((s) => [
+          s.name || P(s.platform)?.name || s.platform,
+          realKeys.map((key) => (s.summary as any)?.[key] ?? 0),
+        ])
+      : MOCK.heat.rows;
     const num = (v: string | number) => parseFloat(String(v).replace(/,/g, ""));
     const ramp = ["var(--q1)", "var(--q2)", "var(--q3)", "var(--q4)", "var(--q5)"];
     let cells = "";
@@ -97,8 +137,16 @@ export function vDashboardHtml(kpi: typeof MOCK.kpi = MOCK.kpi, jobs: MediaJob[]
       });
       cells += `</tr>`;
     });
+    // 抓取状态条：这块数据什么时候抓的、哪些平台空手而归，必须写在表边上。
+    // 一张没有时间戳的数据表会被当成实时的看——实际上可能是三天前的。
+    const stale = crawls.length
+      ? crawls.map((s) => `${s.name || s.platform} ${s.ok ? s.crawledAt : `<b>${s.crawledAt} 空手</b>`}`).join(" · ")
+      : "从未抓取";
     h += `<section><div class="card"><h3>平台 × 指标热力表</h3><div class="tbl-wrap heat"><table>
-      <tr><th>平台</th>${cols.map((c) => `<th style="text-align:center">${c}</th>`).join("")}</tr>${cells || `<tr><td colspan="${cols.length + 1}"><p class="empty">暂无数据</p></td></tr>`}</table></div></div></section>`;
+      <tr><th>平台</th>${cols.map((c) => `<th style="text-align:center">${c}</th>`).join("")}</tr>${cells || `<tr><td colspan="${cols.length + 1}"><p class="empty">暂无数据</p></td></tr>`}</table></div>
+      <p class="foot">数据来自各平台创作者后台抓取（<code>metrics_crawler.py</code>，复用已登录窗口）：${stale}
+      　<span class="btn sm" data-crawl="1"${crawling ? " aria-disabled=\"true\"" : ""}>${crawling ? "抓取中…（每平台约 25 秒）" : "立即抓取"}</span></p>
+      </div></section>`;
   }
   // AI 爬虫雷达原本还有一张独立子页，与上面「流量与 AI 来源」里的那张同源同数据，
   // 合并成一页后重复出现两次没有意义 —— 只留上面那张。
@@ -112,12 +160,15 @@ export function vDashboardHtml(kpi: typeof MOCK.kpi = MOCK.kpi, jobs: MediaJob[]
       `</table></div></div></section>`;
   }
   {
+    // 每一层都标注**接没接**。原来这张表只写「数据源是什么」，读起来像四条都在跑，
+    // 实际上只有第 ④ 层有采集器——把接入状态写进表里，空卡才有解释。
     h += `<section><div class="card"><h3>归因口径说明</h3><div class="tbl-wrap"><table>
-      <tr><th>层</th><th>数据源</th><th>可信度</th></tr>
-      <tr><td><b>① AI 爬虫抓取</b></td><td>官网/博客服务器日志</td><td>${sdot("ok", "高")}</td></tr>
-      <tr><td><b>② AI 引荐访问</b></td><td>官网埋点 → <code>traffic_events</code></td><td>${sdot("warn", "中")}</td></tr>
-      <tr><td><b>③ AI 答案被引</b></td><td><code>ai_citations</code></td><td>${sdot("ok", "高")}</td></tr>
-      </table></div></div></section>`;
+      <tr><th>层</th><th>数据源</th><th>可信度</th><th>接入状态</th></tr>
+      <tr><td><b>① AI 爬虫抓取</b></td><td>官网/博客服务器日志（GPTBot / ClaudeBot / Bytespider… UA）</td><td>${sdot("ok", "高")}</td><td>${sdot("bad", "未接入：需先有官网日志源")}</td></tr>
+      <tr><td><b>② AI 引荐访问</b></td><td>官网埋点 → <code>traffic_events</code></td><td>${sdot("warn", "中")}</td><td>${sdot("bad", "未接入：需官网埋点")}</td></tr>
+      <tr><td><b>③ AI 答案被引</b></td><td>题库问五引擎 → <code>ai_citations</code></td><td>${sdot("ok", "高")}</td><td>${sdot("bad", "未接入：周探测未落地")}</td></tr>
+      <tr><td><b>④ 平台后台数据</b></td><td>各平台创作者后台 XHR 拦截（<code>metrics_crawler.py</code>）</td><td>${sdot("ok", "高")}</td><td>${sdot("ok", "已接入：热力表 / 阅读卡")}</td></tr>
+      </table></div><p class="foot">前三层的空卡不是「业务为零」，是「还没有采集器」——它们依赖官网侧日志与埋点，不在本机浏览器自动化的能力范围内。</p></div></section>`;
   }
   return h;
 }
@@ -195,7 +246,9 @@ export function vAutopilotHtml(): string {
 export function cronDesignHtml(): string {
   return `<section><div class="card"><h3>系统级定时任务（设计稿 · 尚未接真）</h3><div class="tbl-wrap"><table>
       <tr><th>时间</th><th>任务</th><th>干什么</th><th>状态</th></tr>` +
-    MOCK.cron.map((r) => `<tr><td style="white-space:nowrap">${r[0]}</td><td><b>${r[1]}</b></td><td>${r[2]}</td><td style="white-space:nowrap">${sdot(r[3][0], r[3][1])}</td></tr>`).join("") +
+    // 状态一律标「未接真」：这一表整体就是设计稿，逐行点绿灯会让人以为有 11 个定时任务在跑，
+    // 而实际在跑的只有排期巡检那一个。
+    MOCK.cron.map((r) => `<tr><td style="white-space:nowrap">${r[0]}</td><td><b>${r[1]}</b></td><td>${r[2]}</td><td style="white-space:nowrap">${sdot("idle", "未接真")}</td></tr>`).join("") +
     `</table></div><p class="foot">此表为目标形态的设计稿；已接真的是上方「各平台发文排期」（后端 30 分钟一轮巡检）。</p></div></section>`;
 }
 
@@ -386,16 +439,14 @@ export function portalTitleHtml(pid: string): string {
   return title(`${p.name} 门户`, `媒体门户 / 独立工作台 —— 主打 ${p.ai}`);
 }
 
-/** 标题以下的抬头（适配/登录态条 + 告警）；标题见 portalTitleHtml。 */
+/** 标题以下的抬头：只剩异常告警。
+   原先这里还有一条「适配 / 引擎 / 登录态」信息条 —— 三样都在下面说过第二遍
+   （登录态在工作流那行开关里、适配与引擎在账号矩阵里），一条只读横幅白占一屏高度，撤掉。 */
 export function portalHeaderHtml(pid: string): string {
   const p = P(pid);
   if (!p) return `<div class="callout r">请从顶栏「媒体门户」选一个平台</div>`;
-  const b = { full: "b-full", partial: "b-partial", delegate: "b-delegate", planned: "b-planned" }[p.adapter];
-  let h = `<section><div class="card" style="padding:11px 16px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:var(--text-s);color:var(--dim)">
-    <span class="badge ${b}">适配 ${p.adapterText}</span><span class="badge b-ghost">${p.engine}</span>
-    <span style="margin-left:auto"></span>${sdot(p.login === "ok" ? "ok" : p.login === "none" ? "idle" : "warn", (p.login === "ok" ? "登录态正常" : p.login === "none" ? "尚未接入" : "账号/网络异常") + " · " + p.loginNote)}</div></div></section>`;
-  if (p.login === "none") h += `<div class="callout"><b>本门户尚未接入：</b>${p.engine}</div>`;
-  else if (p.login !== "ok") h += `<div class="callout r"><b>告警：</b>${p.loginNote}</div>`;
-  return h;
+  if (p.login === "none") return `<div class="callout"><b>本门户尚未接入：</b>${p.engine}</div>`;
+  if (p.login !== "ok") return `<div class="callout r"><b>告警：</b>${p.loginNote}</div>`;
+  return "";
 }
 

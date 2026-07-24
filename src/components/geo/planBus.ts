@@ -18,8 +18,13 @@ export interface PlanRequest {
   title: string;
   angle?: string;
   keywords?: string[];
-  /** 用户点「开始」后真正执行的排产启动，返回启动的 job id 供对话框给个「看流程」入口。 */
-  onApprove: () => Promise<{ jobId: string } | void>;
+  /**
+   * 用户点「开始」后真正执行的排产启动，返回启动的 job id 供对话框给个「看流程」入口。
+   * `plan` = 助手刚刚流式生成、人过目的那份规划正文——必须透传进 job：
+   * 不传的话引擎会另跑一次规划，人审的这份等于白写，一篇稿花两次规划的钱，
+   * 而且真正落笔依据的是人没看过的那一份。
+   */
+  onApprove: (plan: string) => Promise<{ jobId: string } | void>;
 }
 
 export const planRequest = ref<PlanRequest | null>(null);

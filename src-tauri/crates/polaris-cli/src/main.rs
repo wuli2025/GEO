@@ -62,9 +62,11 @@ const HELP: &str = r#"polaris-forge — Polaris Forge 渲染引擎 CLI
 
   polaris-forge media-run --platform=<id> --title=<标题> [--topic=<方向>]
                           [--stages=generate,image,typeset,upload] [--model=<claude模型>]
+                          [--article=<已有稿路径>] [--plan=<撰写规划>]
       无头跑一条投递流水线 job(生成→配图→排版→存草稿),与桌面端同一引擎。
       同步阻塞至 done/failed,阶段进展打 stderr,最终 job 快照 JSON 打 stdout。
       --model 下发给 claude CLI(如 claude-opus-4-8);省略用 CLI 默认模型。
+      --plan 给「人已过目的撰写规划」,给了 generate 就照它落笔、不再自拟。
 
 约定:成功 → JSON 到 stdout,退出码 0;失败 → {"ok":false,"error":…} 到 stderr,退出码 1。
 "#;
@@ -269,6 +271,8 @@ fn run(cmd: &str, args: &[String]) -> Result<Value, String> {
                 stages,
                 flag(args, "article"),
                 flag(args, "model"),
+                // 人已过目的撰写规划：给了就直接照它落笔，generate 阶段不再自拟一份。
+                flag(args, "plan"),
             )?;
             eprintln!("[media-run] job {} 已启动(阶段:{})", job.id, job.stages.join("→"));
             // 同步等待:轮询 job 状态,阶段/步骤变化打 stderr,方便脚本与人同时盯。

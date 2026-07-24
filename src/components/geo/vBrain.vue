@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { vBrainHtml, title } from "./render";
 import { useEvolution } from "../../composables/useEvolution";
+import { expertMedia, type MediaPlatform } from "../../tauri";
 defineProps<{ sub?: string; platform: string }>();
 // 大脑·进化数据抽在可替换 composable 里；已接真实后端（evolution.rs），空账本回落示例。
 const { data, source, liveTimeline, liveVersions, refresh, addCard, addEntry, decideEntry, rollbackPrompt } = useEvolution();
@@ -33,13 +34,22 @@ const evoKind = ref("prompt");
 const evoTitle = ref("");
 const evoDetail = ref("");
 const evoExpect = ref("");
+/** 度量证据：这次变更是被哪个度量/现象逼出来的。飞轮健康度数的就是「有证据的变更」，
+ *  留空这条就不计入健康度——所以它在表单里，不是藏在代码里。 */
+const evoEvidence = ref("");
 async function submitEvo() {
   if (!evoTitle.value.trim()) { msg.value = "进化标题必填"; return; }
   busy.value = true; msg.value = "";
   try {
-    await addEntry(evoKind.value, evoTitle.value, { detail: evoDetail.value, expect: evoExpect.value });
-    showEvoForm.value = false; evoTitle.value = ""; evoDetail.value = ""; evoExpect.value = "";
-    msg.value = "已登记，进入观察期";
+    const evidence = evoEvidence.value.split(/[；;\n]/).map((s) => s.trim()).filter(Boolean);
+    await addEntry(evoKind.value, evoTitle.value, {
+      detail: evoDetail.value,
+      expect: evoExpect.value,
+      evidence: evidence.length ? evidence : undefined,
+    });
+    showEvoForm.value = false;
+    evoTitle.value = ""; evoDetail.value = ""; evoExpect.value = ""; evoEvidence.value = "";
+    msg.value = evidence.length ? "已登记，进入观察期（已计入飞轮健康度）" : "已登记，进入观察期（无度量证据，不计入健康度）";
   } catch (e) { msg.value = String(e); } finally { busy.value = false; }
 }
 
@@ -53,11 +63,22 @@ async function decide(id: string, status: "已固化" | "已回滚") {
     msg.value = status === "已固化" ? "已固化，关联卡功劳分 +1" : "已回滚，已自动沉淀 anti_pattern 卡";
   } catch (e) { msg.value = String(e); } finally { busy.value = false; }
 }
+/**
+ * 回滚 = 版本树切 active **并把该版内容写回 overlay 文件**。
+ * 此前这里只切账本指针、提示用户「可在专家阵容里写回补丁」，而专家抽屉里的同名按钮
+ * 是真写回的——同一个「回滚」两种语义，点哪个决定了它到底生不生效。统一成真回滚。
+ */
 async function rollback(id: string) {
   busy.value = true; msg.value = "";
   try {
     const v = await rollbackPrompt(id);
-    msg.value = `已回滚到 ${v.expertId}·${v.anchor} v${v.version}（内容已置为 active，可在专家阵容里写回补丁）`;
+    if (v.platform && v.anchor === "platform_overlay") {
+      await expertMedia.overlaySet(v.platform as MediaPlatform, v.expertId, v.content);
+      msg.value = `已回滚到 ${v.expertId}·${v.platform} v${v.version}，内容已写回补丁并立即生效`;
+    } else {
+      // 非平台补丁锚点没有对应的可写文件，只能切账本——如实说明，别让人以为生效了。
+      msg.value = `已把 ${v.expertId}·${v.anchor} v${v.version} 置为 active（该锚点无对应补丁文件，未写回）`;
+    }
   } catch (e) { msg.value = String(e); } finally { busy.value = false; }
 }
 </script>
@@ -91,6 +112,7 @@ async function rollback(id: string) {
         </div>
         <input v-model="evoDetail" class="geo-input" placeholder="变更明细 / diff 摘要" />
         <input v-model="evoExpect" class="geo-input" placeholder="预期效果（观察期结束对照）" />
+        <input v-model="evoEvidence" class="geo-input" placeholder="度量证据（是哪个数据逼出这次变更；多条用分号隔开。留空则不计入飞轮健康度）" />
         <div><button class="btn sm" :disabled="busy" @click="submitEvo">登记（进入观察期）</button></div>
       </div>
       <div v-if="source === 'live' && observing.length" style="margin-top:10px">

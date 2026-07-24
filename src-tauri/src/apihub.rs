@@ -1012,6 +1012,10 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
             opt_str(a, "detail"),
         )?),
         "mediaops_metrics_summary" => ok(crate::mediaops::mediaops_metrics_summary()),
+        "mediaops_crawl_snapshots" => ok(crate::mediaops::mediaops_crawl_snapshots()),
+        "mediaops_crawl_run" => ok(crate::mediaops::mediaops_crawl_run(
+            a.get("platforms").map(|_| vec_str(a, "platforms")),
+        )?),
 
         // ── 循环工程（M10 大脑·进化，evolution.rs）──
         "evolution_state" => ok(crate::evolution::evolution_state()),
@@ -1041,6 +1045,7 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
             opt_str(a, "expect"),
             a.get("insightIds").map(|_| vec_str(a, "insightIds")),
             a.get("evidence").map(|_| vec_str(a, "evidence")),
+            opt_str(a, "status"),
         )?),
         "evolution_decide" => ok(crate::evolution::evolution_decide(
             req_str(a, "id")?,
@@ -1081,6 +1086,7 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
             req_str(a, "name")?,
             req_str(a, "content")?,
         )?),
+        "brand_doc_import" => ok(crate::brand::brand_doc_import(vec_str(a, "paths"))),
         "brand_doc_delete" => ok(crate::brand::brand_doc_delete(req_str(a, "name")?)?),
         "brand_doc_read" => ok(crate::brand::brand_doc_read(req_str(a, "name")?)?),
         "brand_paths" => ok(crate::brand::brand_paths()),
@@ -1096,6 +1102,7 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
             a.get("stages").map(|_| vec_str(a, "stages")),
             opt_str(a, "articlePath"),
             opt_str(a, "model"),
+            opt_str(a, "plan"),
         )?),
         "media_job_status" => ok(crate::media_engine::media_job_status(req_str(a, "jobId")?)?),
         "media_job_resume" => ok(crate::media_engine::media_job_resume(req_str(a, "jobId")?)?),

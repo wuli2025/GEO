@@ -303,6 +303,74 @@
 .geo-ops .pre-box { white-space: pre-wrap; font-size: var(--text-xs); line-height: 1.6; background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--radius-ctl); padding: var(--space-m); overflow: auto; max-height: 420px; margin-top: var(--space-s); }
 .geo-ops .pre-box.sm { max-height: 320px; }
 .geo-ops .grow { flex: 1; }
+/* 品牌档案的两栏：左边长表单，右边那块「AI 帮你填」。
+   右栏 sticky 跟着滚——人在下面第五组填字段时，输入框还在手边。 */
+.geo-ops .bd-page { display: flex; align-items: flex-start; gap: var(--space-l); }
+.geo-ops .bd-col { flex: 1; min-width: 0; }
+.geo-ops .bd-ai {
+  position: sticky; top: 0;
+  flex: none; width: 336px;
+  max-height: calc(100vh - 150px);
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: var(--radius-card);
+  background: var(--panel); box-shadow: var(--shadow-2, 0 8px 24px rgba(28, 40, 80, .08));
+  overflow: hidden;
+}
+/* 拖拽悬停：整块板子亮起来，人不必瞄准某个小方框 */
+.geo-ops .bd-ai.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.geo-ops .bd-ai-h {
+  flex: none; display: flex; align-items: center; gap: var(--space-xs);
+  padding: 10px var(--space-m); border-bottom: 1px solid var(--line);
+  font-size: var(--text-s); color: var(--ink);
+}
+.geo-ops .bd-ai-x {
+  border: 0; background: none; cursor: pointer; color: var(--dim);
+  font-family: inherit; font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 8px;
+}
+.geo-ops .bd-ai-x:hover { background: var(--card2); color: var(--ink); }
+.geo-ops .bd-ai-body {
+  flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin;
+  padding: var(--space-m); display: flex; flex-direction: column; gap: var(--space-s);
+}
+.geo-ops .bd-ai-drop {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--panel); box-shadow: inset 0 0 0 2px var(--accent);
+  color: var(--accent-ink); font-size: var(--text-s); pointer-events: none;
+}
+/* 收起后留一枚竖着的把手：这页每次打开仍会自动弹出，收起只在本次浏览有效 */
+.geo-ops .bd-ai-tab {
+  position: sticky; top: 0; flex: none;
+  writing-mode: vertical-rl;
+  padding: var(--space-m) 6px;
+  border: 1px solid var(--line); border-radius: var(--radius-card);
+  background: var(--panel); color: var(--dim);
+  font-family: inherit; font-size: var(--text-xs); cursor: pointer;
+}
+.geo-ops .bd-ai-tab:hover { color: var(--accent); border-color: var(--accent); }
+/* AI 的填写提议：一处一行，勾了才进表单 */
+.geo-ops .bd-prop {
+  border: 1px solid var(--line); border-radius: var(--radius-ctl);
+  padding: var(--space-s); background: var(--card);
+}
+.geo-ops .bd-prop.over { border-color: var(--warn, var(--line-2)); }
+.geo-ops .bd-prop-h { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--text-s); cursor: pointer; }
+.geo-ops .bd-prop-old {
+  margin: 6px 0 0; font-size: var(--text-2xs); color: var(--muted);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 3.4em; overflow: hidden; text-decoration: line-through;
+}
+.geo-ops .bd-prop-new {
+  margin: 4px 0 0; font-size: var(--text-xs); color: var(--ink2); line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* 窄屏：右栏退回文档流，排到表单下面（sticky 会失效，正好） */
+@media (max-width: 1240px) {
+  .geo-ops .bd-page { flex-direction: column; }
+  /* 仍要 relative：拖拽提示是绝对定位的覆盖层，靠它锚在板子里 */
+  .geo-ops .bd-ai { position: relative; width: 100%; max-height: none; }
+  .geo-ops .bd-ai-tab { position: static; width: 100%; }
+  .geo-ops .bd-ai-tab { writing-mode: horizontal-tb; }
+}
 @media (max-width: 880px) {
   .geo-ops .bd-form { grid-template-columns: 1fr; gap: var(--space-s); }
   .geo-ops .bd-form > b { padding-top: 0; }

@@ -3,6 +3,9 @@
  * 切换中心（cc-switch 复刻的供应商坞·内联版）—— 嵌进运营中心「API 中心 / 模型通道」下方。
  * 与 Sidebar 左下角的 ProviderDock 共用同一个 providers store，状态天然同步。
  * 功能齐平：点选切换供应商、联动/隔离开关、本地路由热切换开关、添加供应商入口、Codex/Claude 授权入口。
+ *
+ * `big`：主角版式（API 中心「模型通道」页用）。列表铺成两列网格、字号行高整体放大，
+ * 让「换一家模型」这件事在页面里是**第一眼**就能点到的东西，而不是折在角落的小控件。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
@@ -11,6 +14,8 @@ import {
 } from "@lucide/vue";
 import { useProvidersStore } from "../../stores/providers";
 import type { ProviderView, CodexDeviceLogin, ClaudeLoginStart } from "../../tauri";
+
+const props = withDefaults(defineProps<{ big?: boolean }>(), { big: false });
 
 const store = useProvidersStore();
 const filter = ref("");
@@ -277,9 +282,9 @@ function resetClaudeAuth() {
 </script>
 
 <template>
-  <div class="psw card">
+  <div class="psw card" :class="{ big: props.big }">
     <div class="psw-head">
-      <h3>切换中心<span class="ccnote">cc-switch 复刻 · 与侧栏坞共用状态</span></h3>
+      <h3>切换中心<span class="ccnote">{{ props.big ? "点一下换一家模型 · 与侧栏坞共用状态" : "cc-switch 复刻 · 与侧栏坞共用状态" }}</span></h3>
       <div class="psw-head-act">
         <button class="btn ghost sm" title="刷新" @click="store.refresh(); store.refreshCodex(); store.refreshClaudeAuth()">
           <RefreshCw :size="13" :stroke-width="1.8" />
@@ -535,4 +540,42 @@ function resetClaudeAuth() {
 .ac-input:focus { outline: none; border-color: #cc785c; border-style: solid; }
 .ac-err { margin: 1px 0 0; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--vermilion, #dc2626); background: var(--vermilion-soft, #fde8e8); border-radius: 6px; padding: 6px 9px; }
 .psw-err { font-size: 11px; color: var(--vermilion, #dc2626); background: var(--vermilion-soft, #fde8e8); border-radius: 6px; padding: 6px 9px; }
+
+/* ── 主角版式（big）：模型通道页的第一屏，整体放大 + 列表铺两列 ── */
+.psw.big { gap: 14px; }
+.psw.big .psw-head h3 { font-size: 16px; }
+.psw.big .ccnote { font-size: 11.5px; }
+.psw.big .btn.sm { font-size: 13px; padding: 6px 13px; }
+
+.psw.big .psw-now { padding: 14px 16px; gap: 12px; border-width: 1.5px; }
+.psw.big .psw-now .dot { width: 13px; height: 13px; }
+.psw.big .now-name { font-size: 16px; }
+.psw.big .now-host { font-size: 12px; margin-top: 3px; }
+.psw.big .now-using { font-size: 12px; }
+
+.psw.big .psw-switches { flex-direction: row; }
+.psw.big .sw-row { flex: 1; min-width: 0; padding: 10px 13px; }
+.psw.big .sw-title { font-size: 13px; }
+.psw.big .sw-desc { font-size: 10.5px; }
+
+.psw.big .psw-search { padding: 8px 12px; }
+.psw.big .psw-search input { font-size: 13.5px; }
+
+.psw.big .psw-list {
+  max-height: 460px; padding: 6px; gap: 6px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  align-content: start;
+}
+.psw.big .prov-row { padding: 11px 12px; border-radius: 9px; border: 1px solid transparent; }
+.psw.big .prov-row.on { border-color: var(--primary); }
+.psw.big .prov-dot { width: 11px; height: 11px; }
+.psw.big .prov-name { font-size: 14px; font-weight: 600; }
+.psw.big .prov-host { font-size: 11px; }
+.psw.big .badge-on, .psw.big .badge-need, .psw.big .badge-oauth { font-size: 11px; }
+/* 网格里 hover 才显的行内按钮容易被挤没，固定占位 */
+.psw.big .row-actions { display: inline-flex; opacity: 0; transition: opacity .12s; }
+.psw.big .prov-row:hover .row-actions { opacity: 1; }
+.psw.big .list-empty { grid-column: 1 / -1; font-size: 13px; padding: 20px 0; }
+
+.psw.big .auth-entry { padding: 10px 12px; font-size: 13px; }
 </style>
