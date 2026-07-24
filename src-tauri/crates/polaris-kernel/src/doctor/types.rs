@@ -23,6 +23,9 @@ pub struct ToolStatus {
     pub required: bool,
     /// 一句话状态说明 / 安装建议
     pub hint: String,
+    /// 命中的是不是**随安装包内置**的那份 (见 doctor::bundled)。
+    /// true ⇒ 面板显示「随应用内置」, 不再催用户安装 —— 它本就免安装、免管理员。
+    pub bundled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,9 +46,11 @@ pub struct EnvReport {
     pub claude_dir: Option<String>,
     /// 该目录是否已在「用户 PATH」里 (Windows)。false ⇒ 需要修复
     pub claude_dir_on_user_path: bool,
-    /// 是否有 claude 可用的 shell —— 真身 PowerShell 7 (非 Store 别名) 或 Git Bash。
-    /// false ⇒ 即便装了 claude, 对话里也会报「找不到 PowerShell / bash」。
+    /// 是否有 claude 可用的 shell —— 真身 PowerShell 7 (非 Store 别名) 或 Git Bash
+    /// (含**随安装包内置**的那份)。false ⇒ 即便装了 claude, 对话里也会报「找不到 PowerShell / bash」。
     pub shell_ready: bool,
+    /// 当前这个 shell 是不是随应用内置的 Git Bash。true ⇒ 面板据此说明「无需另装 PowerShell 7」。
+    pub shell_bundled: bool,
     /// 整体是否就绪 (claude 已装 **且** 有可用 shell 才算真能跑起来)
     pub ready: bool,
 }

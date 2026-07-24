@@ -913,6 +913,8 @@ fn dispatch_sync(cmd: &str, a: &Args, app: AppHandle) -> Result<Value, String> {
 
         // ── 环境医生（容器内只读检测；安装类降级为提示）──
         "env_check" => ok(doctor::env_check()),
+        // 静默托管状态: 容器版从不自己装东西(组件随镜像预装), 如实回一个「没跑过」的空状态
+        "env_autopilot_status" => ok(doctor::env_autopilot_status()),
         "env_fix_path" => ok(doctor::env_fix_path()?),
         "env_claude_update_check" => ok(doctor::env_claude_update_check()),
         "env_install_claude" | "env_install_node" | "env_install_pwsh" | "env_update_claude" => {

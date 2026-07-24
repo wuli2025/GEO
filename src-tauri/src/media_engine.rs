@@ -152,6 +152,21 @@ pub struct MediaJob {
     pub updated_at: i64,
 }
 
+/// 一条 job 的「总规划提示词」——整篇文章怎么写的那一整段（详情卡中栏的默认内容）。
+/// 与步骤级提示词区分开：那是某一格局部喂了什么，这是整篇的总纲。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaJobPlan {
+    /// 提示词全文（空=这条 job 不含 generate 阶段，用的是现成正文）。
+    pub prompt: String,
+    /// 站在「写作」这一格上的专家（改提示词入口就指向他）。
+    pub expert_id: String,
+    pub expert_name: String,
+    /// true=generate 已跑过，这是当时真正喂进去的原文快照；
+    /// false=还没跑到，按当前专家画像+平台补丁+品牌契约现拼的预览。
+    pub recorded: bool,
+}
+
 // ───────────────────────── 进程内 job 注册表（落盘持久化，重启不丢历史） ─────────────────────────
 
 /// 历史 job 快照文件：`~/PolarisGEO/logs/jobs/index.json`（原子写，保留最近 JOBS_KEEP 条）。
@@ -189,9 +204,30 @@ fn load_jobs() -> HashMap<String, MediaJob> {
     map
 }
 
-/// 全量快照落盘（best-effort 原子写；job 量小，全量写够用）。持有 JOBS 锁时勿调用。
+/// 快照落盘（best-effort 原子写）。持有 JOBS 锁时勿调用。
+///
+/// **读-合并-写**，不是全量覆盖：桌面壳与 `polaris-cli media-run` 共用同一份 index.json，
+/// 全量覆盖会把对方刚写的 job 整条抹掉。合并规则——同 id 取 `updated_at` 更新的那份，
+/// 盘上独有的 id 一律保留。启动时被判死的 job（[`load_jobs`] 不动 `updated_at`）因此
+/// 打不过真正在跑它的那个进程的后续写入，会被对方自动纠正回来。
 fn save_jobs() {
-    let mut list: Vec<MediaJob> = JOBS.lock().values().cloned().collect();
+    let mine: Vec<MediaJob> = JOBS.lock().values().cloned().collect();
+    let mut merged: HashMap<String, MediaJob> = std::fs::read_to_string(jobs_index_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<MediaJob>>(&raw).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|j| (j.id.clone(), j))
+        .collect();
+    for j in mine {
+        match merged.get(&j.id) {
+            Some(disk) if disk.updated_at > j.updated_at => {} // 盘上更新 → 别人在驱动，让位
+            _ => {
+                merged.insert(j.id.clone(), j);
+            }
+        }
+    }
+    let mut list: Vec<MediaJob> = merged.into_values().collect();
     list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     list.truncate(JOBS_KEEP);
     let path = jobs_index_path();
@@ -207,6 +243,16 @@ fn save_jobs() {
 }
 
 static JOBS: Lazy<Mutex<HashMap<String, MediaJob>>> = Lazy::new(|| Mutex::new(load_jobs()));
+
+/// 本进程里还没跑完的 job 数（pending + running）。
+/// 桌面壳据此决定「点窗口 ✕ 是退出还是转入后台」——有活就不能让进程死，
+/// 否则 `CHILDREN.kill_all()` 会把在飞的 claude/python 一锅端（见 lib.rs 退出钩子）。
+pub fn live_job_count() -> usize {
+    JOBS.lock()
+        .values()
+        .filter(|j| j.status == "running" || j.status == "pending")
+        .count()
+}
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn home() -> PathBuf {
@@ -837,15 +883,21 @@ fn strip_code_fence(s: &str) -> String {
 
 // ───────────────────────── 阶段执行 ─────────────────────────
 
-/// generate：拼「写作专家基础画像 + 平台补丁」系统设定 + 任务指令 → claude → 落 .md。
+/// 拼这条 job 的**总规划提示词**：写作专家基础画像 + 本平台补丁 + insight 卡 + 写作任务
+/// + 品牌植入契约。这一整段就是「整篇文章怎么写」的全部依据，generate 原样喂给模型。
 ///
 /// 专家取自平台编排的「写作」环节（mediaops 设置里可改），不再硬编码 media-writer——
 /// 否则详情页里的「哪个专家」永远是同一个常量，留痕就成了摆设。编排缺「写作」环节时
 /// 回落 media-writer 并在日志里说明，保证老配置照跑。
-fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
+///
+/// 抽成纯拼装函数是为了详情卡：中栏要在 job 还没跑到 generate（甚至还在排队）时就能把
+/// 总纲原文摊开，不能干等步骤留痕。`log` 传 None 即静默——预览路径不该往运行日志里写字。
+fn build_generate_prompt(job: &MediaJob, log: Option<&Path>) -> (StepAttr, String) {
     let mut attr = attr_for(&job.platform, "写作");
     if attr.expert_id.is_empty() {
-        log_line(log_path, "generate：平台编排里没有「写作」环节，回落 media-writer");
+        if let Some(lp) = log {
+            log_line(lp, "generate：平台编排里没有「写作」环节，回落 media-writer");
+        }
         attr = StepAttr {
             expert_id: "media-writer".to_string(),
             expert_name: crate::expert::expert_card_by_id("media-writer")
@@ -866,10 +918,12 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     // 循环工程闭环：insight 卡按范围/功劳分选出，注入系统设定——卡库改变行为，而非死账本。
     let insights = crate::evolution::insights_for_prompt(&attr.expert_id, &job.platform);
     if !insights.is_empty() {
-        log_line(
-            log_path,
-            &format!("generate：注入 insight 卡 {} 张", insights.matches("\n- ").count()),
-        );
+        if let Some(lp) = log {
+            log_line(
+                lp,
+                &format!("generate：注入 insight 卡 {} 张", insights.matches("\n- ").count()),
+            );
+        }
     }
     let cn = platform_cn(&job.platform);
     let topic = if job.topic.trim().is_empty() {
@@ -879,15 +933,14 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     };
     let mut prompt = format!(
         "{system}{insights}\n\n---\n\n# 写作任务\n\n\
-你现在为「{cn}」平台撰写一篇成品正文。\n\n\
-选题标题：{title}\n\
-选题方向 / 要点：{topic}\n\n\
+为「{cn}」写一篇成品正文。选题标题：{title}\n\
+方向/要点：{topic}\n\n\
 硬性要求：\n\
-1. 直接输出 Markdown 正文，不要任何前后缀说明，不要用代码围栏包裹。\n\
-2. 第一行用 `# 标题` 给出成品标题（可在选题标题上优化打磨）。\n\
-3. 结构化：含吸睛引子、若干带 `## 小标题` 的主体段落、收束结尾。\n\
-4. 正文不少于 1200 字，信息密度高，有观点有细节，杜绝空话套话与 AI 腔。\n\
-5. 严格遵循上文系统设定里的平台调性、标题公式与红线。\n",
+1. 只输出 Markdown 正文，无前后缀说明与代码围栏。\n\
+2. 首行 `# 标题`（可在选题标题上打磨）。\n\
+3. 吸睛引子 + 若干 `## 小标题` 主体段 + 收束结尾。\n\
+4. 不少于 1200 字，信息密度高、有观点有细节，杜绝套话与 AI 腔。\n\
+5. 严格遵循上文系统设定的平台调性、标题公式与红线。\n",
         system = system,
         cn = cn,
         title = job.title,
@@ -897,10 +950,19 @@ fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
     // 写作提示词——在写作时织入而不是写完后再贴，正文与品牌同源才自然、才不触发
     // 平台硬广风控。档案未启用则一字不加，老行为零变化。
     if let Some((strength, block)) = crate::brand::contract_for(&job.platform) {
-        log_line(log_path, &format!("generate：织入品牌植入契约（{strength}）"));
+        if let Some(lp) = log {
+            log_line(lp, &format!("generate：织入品牌植入契约（{strength}）"));
+        }
         prompt.push_str("\n");
         prompt.push_str(&block);
     }
+    (attr, prompt)
+}
+
+/// generate：拿总规划提示词喂 claude → 落 .md。
+fn stage_generate(job: &MediaJob, log_path: &Path) -> Result<PathBuf, String> {
+    let (attr, prompt) = build_generate_prompt(job, Some(log_path));
+    let cn = platform_cn(&job.platform);
 
     log_line(
         log_path,
@@ -1012,12 +1074,11 @@ fn stage_image(job: &MediaJob, md_path: &Path, log_path: &Path) -> Result<ImageA
     let cn = platform_cn(&job.platform);
     let prompt = format!(
         "{system}\n\n---\n\n# 配图任务\n\n\
-你是本文的配图导演。通读下面这篇将发布到「{cn}」的文章，**由你自己判断**封面和插图各画什么。\n\n\
-输出硬性要求：只输出一个 JSON 对象，不要任何解释、不要代码围栏。结构：\n\
-{{\"cover\": \"封面画面描述\", \"inline\": [{{\"heading\": \"要插图的小标题原文\", \"prompt\": \"插图画面描述\"}}]}}\n\
-- cover 必填：一句 60–120 字的中文画面描述，包含主体、构图、色调、风格，画面里**不出现任何文字**；\n\
-- inline 选填 0–2 张：heading 必须逐字取自正文里的某个 `## 小标题`；\n\
-- 画面内容必须来自文章的具体信息点，不许套通用模板。\n\n\
+通读将发布到「{cn}」的下文，自行决定封面与插图各画什么。只输出一个 JSON 对象，无解释无围栏：\n\
+{{\"cover\": \"封面画面描述\", \"inline\": [{{\"heading\": \"小标题原文\", \"prompt\": \"插图画面描述\"}}]}}\n\
+- cover 必填：60–120 字中文画面描述（主体/构图/色调/风格），画面**不出现任何文字**；\n\
+- inline 0–2 张，heading 逐字取自正文某个 `## 小标题`；\n\
+- 画面须来自文章具体信息点，禁通用模板。\n\n\
 # 文章全文\n\n{excerpt}\n",
     );
 
@@ -1648,6 +1709,46 @@ pub fn media_job_start(
 #[cfg_attr(feature = "desktop", tauri::command)]
 pub fn media_job_status(job_id: String) -> Result<MediaJob, String> {
     get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))
+}
+
+/// 这条 job 的「总规划提示词」——整篇文章怎么写的那一整段，不是某个步骤的局部提示词。
+/// 详情卡中栏打开即读它，人不用点任何一格就能看见总纲。
+///
+/// 两条来源，留痕优先：
+///   - generate 已跑过 → 原样回放当时落盘的快照（专家/补丁事后被改也不影响历史回放）；
+///   - 还没跑到（排队中/刚开跑）→ 按当前专家画像 + 平台补丁 + 品牌契约现拼一份预览。
+/// 不含 generate 阶段的 job（直接拿现成正文排版投递）没有这东西，返回空串由 UI 说明。
+#[cfg_attr(feature = "desktop", tauri::command)]
+pub fn media_job_plan_prompt(job_id: String) -> Result<MediaJobPlan, String> {
+    let job = get_job(&job_id).ok_or_else(|| format!("job 不存在：{job_id}"))?;
+    if let Some(s) = job
+        .steps
+        .iter()
+        .rev()
+        .find(|s| s.key == STAGE_GENERATE && !s.prompt.is_empty())
+    {
+        return Ok(MediaJobPlan {
+            prompt: s.prompt.clone(),
+            expert_id: s.expert_id.clone(),
+            expert_name: s.expert_name.clone(),
+            recorded: true,
+        });
+    }
+    if !job.stages.iter().any(|s| s == STAGE_GENERATE) {
+        return Ok(MediaJobPlan {
+            prompt: String::new(),
+            expert_id: String::new(),
+            expert_name: String::new(),
+            recorded: false,
+        });
+    }
+    let (attr, prompt) = build_generate_prompt(&job, None);
+    Ok(MediaJobPlan {
+        prompt,
+        expert_id: attr.expert_id,
+        expert_name: attr.expert_name,
+        recorded: false,
+    })
 }
 
 /// 续跑一条失败/被取消的 job：从断点重跑，已完成且产物还在的阶段直接跳过。

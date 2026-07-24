@@ -44,6 +44,9 @@ pub mod updater;
 // 原生标题栏染色（随主题切换，仅桌面窗口有标题栏）
 #[cfg(feature = "desktop")]
 pub mod titlebar;
+// 系统托盘：有后台任务在跑时，关窗只藏窗口不退进程（否则退出钩子会杀光在飞子进程）
+#[cfg(all(feature = "desktop", not(test)))]
+pub mod tray;
 
 // ── host shim(broadcast 事件壳):server 壳与桌面内嵌协作主机(collab-host)共用 ──
 // 已下沉 polaris-runtime(引擎 crate 双壳签名共用它);别名保 `crate::host::…` 旧路径零改动。
@@ -80,7 +83,18 @@ impl KbLocator for HostKbLocator {
 #[cfg(all(feature = "desktop", not(test)))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // 单实例锁必须挂在最前面(插件契约)。桌面壳与已安装版共用 ~/PolarisGEO/logs/jobs/index.json,
+    // 两个实例同跑会互相覆盖 job 索引、还会在启动时把对方正在跑的 job 判成「应用重启中断」。
+    // 第二次启动改为唤起已在跑的那个窗口 —— 关窗转后台之后这条尤其关键:窗口藏起来时
+    // 用户再点一次图标, 要的是「把它叫回来」, 不是起第二个进程。
+    // 开发期确需同时开两个实例时: 设 POLARIS_ALLOW_MULTI=1 绕过(自负索引互踩的后果)。
+    if std::env::var_os("POLARIS_ALLOW_MULTI").is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tray::show_main(app);
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -149,6 +163,9 @@ pub fn run() {
             // 环境预热: 后台把 claude / pwsh 目录塞进进程 PATH + 设 Git Bash 路径,
             // 让之后 spawn 的 claude CLI 直接「找得到、有 shell」, 无需重启 (见 doctor.rs)。
             doctor::prime_path_for_claude();
+            // 环境静默托管: 缺 Claude Code 就在后台悄悄装好(全程免 UAC、不打断用户)。
+            // uv/Python/Git Bash 已随包内置, 通常这里什么都不用做、一声不吭。
+            doctor::start_autopilot(h.clone());
             // 自动更新状态机初始化（记录当前版本 + 持久化路径 + 重启续提示）。best-effort。
             let _ = updater::init(h);
             // 飞书网关「开机自动启动」：若用户开了 auto_start 且凭证齐全，后台自动拉起（不阻塞启动）。
@@ -175,6 +192,38 @@ pub fn run() {
                     "北极星 · GEO (Dev {})",
                     env!("CARGO_PKG_VERSION")
                 ));
+            }
+            // ── 托盘 + 「关窗不杀活」 ────────────────────────────────────────────
+            // 退出钩子会 CHILDREN.kill_all(), 所以只要进程死, 在跑的媒体流水线就断在半路
+            // (实测: 点岔窗口 ✕ → 两条 job 同一秒挂掉, 日志停在「claude 子进程被中断」)。
+            // 于是: 还有活在跑就不让进程死, 窗口藏进托盘继续跑; 空闲时关窗行为不变。
+            let _ = tray::init(h);
+            if let Some(w) = app.get_webview_window("main") {
+                let ah = h.clone();
+                w.on_window_event(move |ev| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+                        if tray::is_quitting() {
+                            return; // 托盘点了「退出」——放行
+                        }
+                        let busy = tray::background_busy();
+                        if busy > 0 {
+                            api.prevent_close();
+                            if let Some(w) = ah.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
+                            tray::refresh_tooltip(&ah);
+                            tray::notify_backgrounded(&ah, busy);
+                        }
+                    }
+                });
+            }
+            // 托盘提示跟着后台活计走(悬停即知它还在替你干活)。10s 一刷, 开销可忽略。
+            {
+                let ah = h.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    tray::refresh_tooltip(&ah);
+                });
             }
             Ok(())
         })
@@ -260,6 +309,7 @@ pub fn run() {
             media_engine::media_job_cancel,
             media_engine::media_job_log,
             media_engine::media_job_article,
+            media_engine::media_job_plan_prompt,
             // 循环工程（M10 大脑·进化）：insight 卡 / 进化时间线 / prompt 版本树 / 飞轮
             evolution::evolution_state,
             evolution::insight_add,
@@ -421,6 +471,7 @@ pub fn run() {
             forge::forge_tts,
             // 环境医生 (环境监测 + 配置安装)
             doctor::env_check,
+            doctor::env_autopilot_status,
             doctor::env_fix_path,
             doctor::env_install_claude,
             doctor::env_install_node,

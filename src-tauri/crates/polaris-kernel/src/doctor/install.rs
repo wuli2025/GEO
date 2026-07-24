@@ -237,6 +237,50 @@ fn node_install_script() -> String {
     ))
 }
 
+/// **便携版** Node.js 安装脚本 (前奏 + 正文) —— 后台静默安装专用, 不弹 UAC。
+pub(crate) fn node_portable_script() -> String {
+    fill(&format!("{PS_DOWNLOAD_PRELUDE}\n{WIN_NODE_PORTABLE_BODY}"))
+}
+
+/// Windows **免管理员**的 Node.js 安装: 下载官方 zip 解压到 `~/.local/polaris-node`。
+///
+/// 为什么不复用上面那套 MSI/winget: 它们都要写 `Program Files` → `Start-Process -Verb RunAs`
+/// **必弹 UAC**。而后台静默安装的前提就是「用户不用点任何东西」, 弹一个没有上下文的
+/// 管理员授权框是最糟的体验(用户根本不知道这是谁弹的)。zip 解压到用户目录全程无提权,
+/// npm 的全局前缀也落在同一个用户目录里, 装 claude 同样不需要管理员。
+const WIN_NODE_PORTABLE_BODY: &str = r#"
+$ver = 'NODE_VER'
+$arch = switch ($env:PROCESSOR_ARCHITECTURE) { 'ARM64' { 'arm64' } 'AMD64' { 'x64' } default { 'x86' } }
+$zip = "node-v$ver-win-$arch.zip"
+$dst = Join-Path $env:TEMP $zip
+$urls = @(
+  "DEPS_BASE/$zip",
+  "https://cdn.npmmirror.com/binaries/node/v$ver/$zip",
+  "https://npmmirror.com/mirrors/node/v$ver/$zip",
+  "https://nodejs.org/dist/v$ver/$zip"
+)
+Get-PolarisFile -Urls $urls -Dest $dst -Magic 'ZIP_MAGIC' -MinBytes 15MB
+if (-not $global:PolarisDlOk) { Write-Output 'Node.js 下载失败 (可检查网络 / 代理后重试)。'; exit 1 }
+$dest = Join-Path $env:USERPROFILE '.local\polaris-node'
+$stage = Join-Path $env:TEMP ('polaris-node-stage-' + [guid]::NewGuid().ToString('N'))
+try {
+  Expand-Archive -Path $dst -DestinationPath $stage -Force
+} catch {
+  Write-Output ('解压失败: ' + $_.Exception.Message); Remove-Item $dst -Force -ErrorAction SilentlyContinue; exit 1
+}
+Remove-Item $dst -Force -ErrorAction SilentlyContinue
+# zip 内是 node-v<ver>-win-<arch>\ 一层, 提出来
+$inner = Get-ChildItem $stage -Directory | Select-Object -First 1
+if (-not $inner) { Write-Output '解压后没找到 Node 目录。'; exit 1 }
+if (Test-Path $dest) { Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue }
+New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+Move-Item $inner.FullName $dest
+Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+$node = Join-Path $dest 'node.exe'
+if (-not (Test-Path $node)) { Write-Output '解压后未找到 node.exe。'; exit 1 }
+Write-Output ('Node.js (便携版) 安装完成: ' + (& $node -v) + ' -> ' + $dest)
+"#;
+
 /// PowerShell 7 安装脚本 (前奏 + msiexec 封装 + 正文)。
 fn pwsh_install_script() -> String {
     fill(&format!(
@@ -542,6 +586,17 @@ fn claude_install_cmd(method: &str) -> String {
     }
 }
 
+/// Claude Code 的 npm(国内镜像) 安装命令 —— 供后台静默托管复用, 与手动安装同一条命令。
+pub(crate) fn claude_npm_install_cmd() -> String {
+    claude_install_cmd("npm")
+}
+
+/// macOS 免 sudo 装 Node 的命令 (供后台静默托管复用)。
+#[cfg(target_os = "macos")]
+pub(crate) fn mac_node_install_command() -> Command {
+    build_install_shell(MAC_NODE_INSTALL_SCRIPT)
+}
+
 /// 构造一个跑给定内联命令的 PowerShell 进程 (Bypass 执行策略, 以便 iex 远程脚本)。
 fn build_powershell(inner: &str) -> Command {
     let mut cmd = Command::new("powershell");
@@ -725,6 +780,7 @@ mod tests {
         all.push(("uv", uv_install_script()));
         #[cfg(target_os = "macos")]
         all.push(("mac-uv", mac_uv_install_script()));
+        all.push(("node-portable", node_portable_script()));
         for (name, s) in &all {
             for ph in ["DEPS_BASE", "MSI_MAGIC", "ZIP_MAGIC", "PWSH_VER", "NODE_VER", "UV_VER"] {
                 assert!(!s.contains(ph), "{name} 脚本里还留着未替换的占位符 {ph}");
@@ -756,7 +812,11 @@ mod tests {
     /// 三个 Windows 脚本一个都不能漏, 故在此锁死。
     #[test]
     fn windows_scripts_disable_progress_bar() {
-        let mut all = vec![node_install_script(), pwsh_install_script()];
+        let mut all = vec![
+            node_install_script(),
+            pwsh_install_script(),
+            node_portable_script(),
+        ];
         #[cfg(windows)]
         all.push(uv_install_script());
         for s in &all {
@@ -779,6 +839,7 @@ mod tests {
         all.push(("uv", uv_install_script()));
         #[cfg(target_os = "macos")]
         all.push(("mac-uv", mac_uv_install_script()));
+        all.push(("node-portable", node_portable_script()));
         for (name, src) in &all {
             let ext = if name.starts_with("mac") { "sh" } else { "ps1" };
             let p = dir.join(format!("polaris_{name}_install.{ext}"));
@@ -798,6 +859,7 @@ mod tests {
             ("node", node_install_script()),
             ("pwsh", pwsh_install_script()),
             ("uv", uv_install_script()),
+            ("node-portable", node_portable_script()),
         ] {
             let f = std::env::temp_dir().join(format!("polaris_test_{name}_install.ps1"));
             // 必须写 UTF-8 BOM: Windows PowerShell 5.1 读**无 BOM** 的 .ps1 会按 ANSI(GBK) 解,
