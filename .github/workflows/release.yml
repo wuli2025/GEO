@@ -40,6 +40,20 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run build
+      # tauri.windows.conf.json 把 runtime/{uv,python,git} 声明成**显式**资源路径，
+      # tauri-build 的 build script 会逐条校验它们存在——连 `cargo test` 也跑这道校验。
+      # 但 runtime/ 是 .gitignore 的，只有 `tauri build` 的 beforeBuildCommand 才会
+      # 调 fetch-runtimes.mjs 抓下来，所以干净检出上 cargo test 必挂在
+      # 「resource path `runtime\git` doesn't exist」。
+      # 这里只补空壳让资源校验过关：本 job 只跑 cargo test --lib / cargo check，
+      # 不碰运行时内容；真正的 227MB 抓取仍由下面 release job 的 tauri build 负责。
+      - name: Stub bundled runtime dirs (resource validation only)
+        working-directory: src-tauri
+        run: |
+          foreach ($d in "runtime/uv", "runtime/python", "runtime/git") {
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+            New-Item -ItemType File -Force -Path "$d/.keep" | Out-Null
+          }
       - name: Rust library tests
         working-directory: src-tauri
         run: cargo test --lib
